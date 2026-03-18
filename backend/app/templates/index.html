@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Construct-DCAT Starter</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>Construct-DCAT Onboarding</h1>
+        <p>No npm required. Edit the JSON payload, validate it, and export RDF.</p>
+      </header>
+
+      <section class="panel">
+        <div class="toolbar">
+          <button id="load-example">Load example</button>
+          <button id="validate">Validate</button>
+          <button id="export-jsonld">Export JSON-LD</button>
+          <button id="export-turtle">Export Turtle</button>
+        </div>
+        <label for="payload">Dataset payload</label>
+        <textarea id="payload" spellcheck="false">{{ example | tojson(indent=2) }}</textarea>
+      </section>
+
+      <section class="grid">
+        <div class="panel">
+          <h2>Validation</h2>
+          <pre id="validation-output">Ready.</pre>
+        </div>
+        <div class="panel">
+          <h2>Export</h2>
+          <pre id="export-output">No export yet.</pre>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Schema UML</h2>
+        <div id="diagram">Loading UML...</div>
+      </section>
+
+      <section class="panel">
+        <h3>Add Property</h3>
+
+        <input id="new-slot-name" placeholder="slot name (e.g. project_phase)" />
+        <input id="new-slot-type" placeholder="type (e.g. string)" />
+        <button onclick="addSlot()">Add</button>
+      </section>
+    </main>
+
+    <script>
+      window.EXAMPLE_PAYLOAD = {{ example | tojson }};
+    </script>
+
+    <script src="/static/js/app.js"></script>
+
+    <script>
+      async function loadUML() {
+        const diagram = document.getElementById("diagram");
+
+        try {
+          const res = await fetch("/schema/uml");
+          if (!res.ok) {
+            throw new Error("HTTP " + res.status);
+          }
+
+          const data = await res.json();
+
+          mermaid.initialize({ startOnLoad: false });
+
+          const { svg } = await mermaid.render("umlDiagramSvg", data.mermaid);
+          diagram.innerHTML = svg;
+        } catch (err) {
+          diagram.textContent = "Failed to load UML";
+          console.error("UML render error:", err);
+        }
+      }
+
+      window.addEventListener("DOMContentLoaded", loadUML);
+    </script>
+
+    <script>
+    async function addSlot() {
+      const name = document.getElementById("new-slot-name").value;
+      const type = document.getElementById("new-slot-type").value;
+
+      await fetch("/schema/add-slot", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          class_name: "ConstructDataset",
+          slot_name: name,
+          slot_type: type
+        })
+      });
+
+      // reload UML
+      loadUML();
+    }
+    </script>
+  </body>
+</html>

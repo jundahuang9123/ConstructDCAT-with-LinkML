@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Construct-DCAT UML</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <h2>Schema UML Viewer</h2>
+
+  <div id="diagram"></div>
+
+  <script>
+  async function loadUML() {
+    try {
+      const res = await fetch("/schema/uml");
+      const data = await res.json();
+
+      const diagramDiv = document.getElementById("diagram");
+
+      // insert raw text first
+      diagramDiv.innerHTML = `<pre class="mermaid">${data.mermaid}</pre>`;
+
+      // FORCE Mermaid to render
+      mermaid.initialize({ startOnLoad: false });
+      mermaid.run();
+
+    } catch (err) {
+      document.getElementById("diagram").innerText = "Failed to load UML";
+      console.error(err);
+    }
+  }
+
+  loadUML();
+</script>
+</body>
+</html>

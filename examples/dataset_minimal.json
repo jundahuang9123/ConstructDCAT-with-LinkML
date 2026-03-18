@@ -1,0 +1,20 @@
+{
+  "identifier": "dataset-001",
+  "title": "Office building BIM package",
+  "description": "A sample construction-domain dataset entry.",
+  "keyword": ["bim", "ifc", "construction"],
+  "asset_kind": "building",
+  "lifecycle_phase": "design",
+  "bim_model_ref": "https://example.org/models/ifc/001",
+  "aas_ref": "https://example.org/aas/001",
+  "geometry_format": "ifc",
+  "contact_point": "catalog@example.org",
+  "distribution": [
+    {
+      "access_url": "https://example.org/datasets/001",
+      "download_url": "https://example.org/datasets/001.ifc",
+      "media_type": "application/x-step",
+      "format": "IFC"
+    }
+  ]
+}
