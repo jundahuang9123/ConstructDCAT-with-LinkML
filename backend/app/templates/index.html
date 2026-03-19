@@ -48,6 +48,13 @@
         <input id="new-slot-type" placeholder="type (e.g. string)" />
         <button onclick="addSlot()">Add</button>
       </section>
+      <section class="panel">
+        <h3>Add Enum Value</h3>
+
+        <input id="enum-name" placeholder="Enum (e.g. AssetKindEnum)" />
+        <input id="enum-value" placeholder="Value (e.g. tunnel)" />
+        <button onclick="addEnum()">Add</button>
+      </section>
     </main>
 
     <script>
@@ -102,5 +109,25 @@
       loadUML();
     }
     </script>
+
+    <script>
+    async function addEnum() {
+      const enumName = document.getElementById("enum-name").value;
+      const value = document.getElementById("enum-value").value;
+
+      await fetch("/schema/add-enum-value", {
+        method: "POST",
+        headers: {
+        "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          enum_name: enumName,
+          value: value
+        })
+      });
+
+      loadUML(); // refresh diagram
+    }
+  </script>
   </body>
 </html>

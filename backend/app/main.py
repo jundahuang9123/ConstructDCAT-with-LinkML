@@ -151,21 +151,47 @@ def get_uml():
     slots = schema.get("slots", {})
     uml = "classDiagram\n"
 
+    # These are the fields we consider part of standard DCAT/DC Terms
+    DCAT_FIELDS = {
+        "identifier",
+        "title",
+        "description",
+        "keyword",
+        "contact_point",
+        "distribution",
+        "access_url",
+        "download_url",
+        "media_type",
+        "format",
+        }
+
+    # LOOP 1:
+    # Build the UML class boxes and list their attributes/slots
     for cls, content in classes.items():
         uml += f"  class {cls} {{\n"
+
         for slot_name in content.get("slots", []):
+            # Look up the slot definition from the global "slots" section
             slot_def = slots.get(slot_name, {})
             slot_range = slot_def.get("range", "string")
 
-            # show enum values if exist
+            # Mark whether this field comes from base DCAT/DC Terms
+            # or is part of the Construct-DCAT extension
+            prefix = "[DCAT]" if slot_name in DCAT_FIELDS else "[CX]"
+
+            # If the slot range is an enum, also show allowed values
             enum = schema.get("enums", {}).get(slot_range)
             if enum:
                 values = ",".join(enum.get("permissible_values", {}).keys())
-                uml += f"    {slot_name} : {slot_range} [{values}]\n"
+                uml += f"    {prefix} {slot_name} : {slot_range} [{values}]\n"
             else:
-                uml += f"    {slot_name} : {slot_range}\n"
+                uml += f"    {prefix} {slot_name} : {slot_range}\n"
+
         uml += "  }\n"
 
+    # LOOP 2:
+    # Build relationship arrows between classes
+    # Example: ConstructDataset --> Distribution : distribution
     for cls, content in classes.items():
         for slot_name in content.get("slots", []):
             slot_def = slots.get(slot_name, {})
@@ -196,6 +222,28 @@ def add_slot(payload: dict):
     schema["classes"][class_name].setdefault("slots", []).append(slot_name)
 
     # save back
+    with open(schema_path, "w", encoding="utf-8") as f:
+        yaml.dump(schema, f, sort_keys=False)
+
+    return {"status": "ok"}
+
+@app.post("/schema/add-enum-value")
+def add_enum_value(payload: dict):
+    schema_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
+
+    with open(schema_path, encoding="utf-8") as f:
+        schema = yaml.safe_load(f)
+
+    enum_name = payload["enum_name"]
+    value = payload["value"]
+
+    enums = schema.setdefault("enums", {})
+
+    if enum_name not in enums:
+        enums[enum_name] = {"permissible_values": {}}
+
+    enums[enum_name].setdefault("permissible_values", {})[value] = None
+
     with open(schema_path, "w", encoding="utf-8") as f:
         yaml.dump(schema, f, sort_keys=False)
 
