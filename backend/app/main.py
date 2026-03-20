@@ -165,29 +165,29 @@ def get_uml():
         "format",
         }
 
-    # LOOP 1:
-    # Build the UML class boxes and list their attributes/slots
-    for cls, content in classes.items():
-        uml += f"  class {cls} {{\n"
+    slot_def = slots.get(slot_name, {})
+    slot_range = slot_def.get("range", "string")
 
-        for slot_name in content.get("slots", []):
-            # Look up the slot definition from the global "slots" section
-            slot_def = slots.get(slot_name, {})
-            slot_range = slot_def.get("range", "string")
+    required = slot_def.get("required", False)
+    multivalued = slot_def.get("multivalued", False)
 
-            # Mark whether this field comes from base DCAT/DC Terms
-            # or is part of the Construct-DCAT extension
-            prefix = "[DCAT]" if slot_name in DCAT_FIELDS else "[CX]"
+    # cardinality label
+    if required and multivalued:
+        card = "[1..*]"
+    elif required:
+        card = "[1]"
+    elif multivalued:
+        card = "[*]"
+    else:
+        card = "[0..1]"
 
-            # If the slot range is an enum, also show allowed values
-            enum = schema.get("enums", {}).get(slot_range)
-            if enum:
-                values = ",".join(enum.get("permissible_values", {}).keys())
-                uml += f"    {prefix} {slot_name} : {slot_range} [{values}]\n"
-            else:
-                uml += f"    {prefix} {slot_name} : {slot_range}\n"
+    enum = schema.get("enums", {}).get(slot_range)
 
-        uml += "  }\n"
+    if enum:
+        values = ",".join(enum.get("permissible_values", {}).keys())
+        uml += f"    {slot_name} : {slot_range} {card} [{values}]\n"
+    else:
+        uml += f"    {slot_name} : {slot_range} {card}\n"
 
     # LOOP 2:
     # Build relationship arrows between classes
@@ -248,3 +248,68 @@ def add_enum_value(payload: dict):
         yaml.dump(schema, f, sort_keys=False)
 
     return {"status": "ok"}
+
+@app.post("/schema/delete-slot")
+def delete_slot(payload: dict):
+    schema_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
+
+    with open(schema_path, encoding="utf-8") as f:
+        schema = yaml.safe_load(f)
+
+    class_name = payload["class_name"]
+    slot_name = payload["slot_name"]
+
+    class_slots = schema.get("classes", {}).get(class_name, {}).get("slots", [])
+    if slot_name in class_slots:
+        class_slots.remove(slot_name)
+
+    # remove global slot definition too, if present
+    if slot_name in schema.get("slots", {}):
+        del schema["slots"][slot_name]
+
+    with open(schema_path, "w", encoding="utf-8") as f:
+        yaml.dump(schema, f, sort_keys=False)
+
+    return {"status": "ok"}
+
+@app.post("/schema/delete-enum-value")
+def delete_enum_value(payload: dict):
+    schema_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
+
+    with open(schema_path, encoding="utf-8") as f:
+        schema = yaml.safe_load(f)
+
+    enum_name = payload["enum_name"]
+    value = payload["value"]
+
+    enums = schema.get("enums", {})
+    if enum_name in enums:
+        permissible = enums[enum_name].get("permissible_values", {})
+        if value in permissible:
+            del permissible[value]
+
+    with open(schema_path, "w", encoding="utf-8") as f:
+        yaml.dump(schema, f, sort_keys=False)
+
+    return {"status": "ok"}
+
+@app.post("/schema/update-slot-flags")
+def update_slot_flags(payload: dict):
+    schema_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
+
+    with open(schema_path, encoding="utf-8") as f:
+        schema = yaml.safe_load(f)
+
+    slot_name = payload["slot_name"]
+    required = payload.get("required", False)
+    multivalued = payload.get("multivalued", False)
+
+    slot_def = schema.setdefault("slots", {}).setdefault(slot_name, {})
+    slot_def["required"] = required
+    slot_def["multivalued"] = multivalued
+
+    with open(schema_path, "w", encoding="utf-8") as f:
+        yaml.dump(schema, f, sort_keys=False)
+
+    return {"status": "ok"}
+

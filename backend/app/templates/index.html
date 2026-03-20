@@ -11,7 +11,7 @@
     <main class="container">
       <header>
         <h1>Construct-DCAT Onboarding</h1>
-        <p>No npm required. Edit the JSON payload, validate it, and export RDF.</p>
+        <p>No npm required. Edit the JSON payload, validate it, export RDF, and discuss schema changes visually.</p>
       </header>
 
       <section class="panel">
@@ -42,18 +42,35 @@
       </section>
 
       <section class="panel">
-        <h3>Add Property</h3>
+        <h2>Edit Property</h2>
+        <input id="slot-name" placeholder="slot name (e.g. project_phase)" />
+        <input id="slot-type" placeholder="type (e.g. string, Distribution, AssetKindEnum)" />
 
-        <input id="new-slot-name" placeholder="slot name (e.g. project_phase)" />
-        <input id="new-slot-type" placeholder="type (e.g. string)" />
-        <button onclick="addSlot()">Add</button>
+        <label>
+          <input type="checkbox" id="slot-required" />
+          Required
+        </label>
+
+        <label>
+          <input type="checkbox" id="slot-multi" />
+          Multivalued
+        </label>
+
+        <div class="toolbar">
+          <button onclick="saveSlot()">Add / Update Property</button>
+          <button onclick="deleteSlot()">Delete Property</button>
+        </div>
       </section>
-      <section class="panel">
-        <h3>Add Enum Value</h3>
 
+      <section class="panel">
+        <h2>Edit Enum</h2>
         <input id="enum-name" placeholder="Enum (e.g. AssetKindEnum)" />
         <input id="enum-value" placeholder="Value (e.g. tunnel)" />
-        <button onclick="addEnum()">Add</button>
+
+        <div class="toolbar">
+          <button onclick="addEnum()">Add Enum Value</button>
+          <button onclick="deleteEnumValue()">Delete Enum Value</button>
+        </div>
       </section>
     </main>
 
@@ -76,7 +93,6 @@
           const data = await res.json();
 
           mermaid.initialize({ startOnLoad: false });
-
           const { svg } = await mermaid.render("umlDiagramSvg", data.mermaid);
           diagram.innerHTML = svg;
         } catch (err) {
@@ -85,49 +101,93 @@
         }
       }
 
+      async function saveSlot() {
+        const name = document.getElementById("slot-name").value;
+        const type = document.getElementById("slot-type").value;
+        const required = document.getElementById("slot-required").checked;
+        const multivalued = document.getElementById("slot-multi").checked;
+
+        await fetch("/schema/add-slot", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            class_name: "ConstructDataset",
+            slot_name: name,
+            slot_type: type
+          })
+        });
+
+        await fetch("/schema/update-slot-flags", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            slot_name: name,
+            required: required,
+            multivalued: multivalued
+          })
+        });
+
+        loadUML();
+      }
+
+      async function deleteSlot() {
+        const name = document.getElementById("slot-name").value;
+
+        await fetch("/schema/delete-slot", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            class_name: "ConstructDataset",
+            slot_name: name
+          })
+        });
+
+        loadUML();
+      }
+
+      async function addEnum() {
+        const enumName = document.getElementById("enum-name").value;
+        const value = document.getElementById("enum-value").value;
+
+        await fetch("/schema/add-enum-value", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            enum_name: enumName,
+            value: value
+          })
+        });
+
+        loadUML();
+      }
+
+      async function deleteEnumValue() {
+        const enumName = document.getElementById("enum-name").value;
+        const value = document.getElementById("enum-value").value;
+
+        await fetch("/schema/delete-enum-value", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            enum_name: enumName,
+            value: value
+          })
+        });
+
+        loadUML();
+      }
+
       window.addEventListener("DOMContentLoaded", loadUML);
     </script>
-
-    <script>
-    async function addSlot() {
-      const name = document.getElementById("new-slot-name").value;
-      const type = document.getElementById("new-slot-type").value;
-
-      await fetch("/schema/add-slot", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          class_name: "ConstructDataset",
-          slot_name: name,
-          slot_type: type
-        })
-      });
-
-      // reload UML
-      loadUML();
-    }
-    </script>
-
-    <script>
-    async function addEnum() {
-      const enumName = document.getElementById("enum-name").value;
-      const value = document.getElementById("enum-value").value;
-
-      await fetch("/schema/add-enum-value", {
-        method: "POST",
-        headers: {
-        "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          enum_name: enumName,
-          value: value
-        })
-      });
-
-      loadUML(); // refresh diagram
-    }
-  </script>
   </body>
 </html>
