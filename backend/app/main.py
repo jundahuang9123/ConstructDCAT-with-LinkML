@@ -164,20 +164,26 @@ def get_uml():
     enums.update(base_schema.get("enums", {}))
     enums.update(ext_schema.get("enums", {}))
 
-    uml = "classDiagram\n  direction LR\n"
+    def safe_slot_label(slot_name: str, slot_def: dict) -> str:
+        slot_uri = slot_def.get("slot_uri", "")
+        if ":" in slot_uri:
+            prefix, local = slot_uri.split(":", 1)
+            return f"{local} ({prefix})"
+        return slot_name
+
+    uml = "classDiagram\n"
 
     for cls, content in classes.items():
         uml += f"  class {cls} {{\n"
 
         all_slots = list(content.get("slots", []))
-
         parent = content.get("is_a")
         if parent and parent in classes:
-            parent_slots = classes[parent].get("slots", [])
-            all_slots = list(parent_slots) + all_slots
+            all_slots = list(classes[parent].get("slots", [])) + all_slots
 
         for slot_name in all_slots:
             slot_def = slots.get(slot_name, {})
+            slot_label = safe_slot_label(slot_name, slot_def)
             slot_range = slot_def.get("range", "string")
 
             required = slot_def.get("required", False)
@@ -195,9 +201,9 @@ def get_uml():
             enum = enums.get(slot_range)
             if enum:
                 values = ",".join(enum.get("permissible_values", {}).keys())
-                uml += f"    {slot_name} : {slot_range} {card} [{values}]\n"
+                uml += f"    {slot_label} : {slot_range} {card} [{values}]\n"
             else:
-                uml += f"    {slot_name} : {slot_range} {card}\n"
+                uml += f"    {slot_label} : {slot_range} {card}\n"
 
         uml += "  }\n"
 
@@ -211,14 +217,11 @@ def get_uml():
 
         for slot_name in all_slots:
             slot_def = slots.get(slot_name, {})
+            slot_label = safe_slot_label(slot_name, slot_def)
             slot_range = slot_def.get("range")
-            if slot_range in classes:
-                uml += f"  {cls} -->|{slot_name}| {slot_range}\n"
 
-    uml += """
-classDef default fill:#1e293b,stroke:#a78bfa,stroke-width:2px,color:#e2e8f0;
-linkStyle default stroke:#e2e8f0,stroke-width:2px;
-"""
+            if slot_range in classes:
+                uml += f"  {cls} --> {slot_range} : {slot_label}\n"
 
     return {"mermaid": uml}
 
