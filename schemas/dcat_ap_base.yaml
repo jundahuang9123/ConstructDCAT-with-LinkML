@@ -1,0 +1,154 @@
+id: https://example.org/linkml/dcat-ap-base
+name: dcat_ap_base
+title: DCAT-AP base schema (simplified)
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  dcat: http://www.w3.org/ns/dcat#
+  dct: http://purl.org/dc/terms/
+  foaf: http://xmlns.com/foaf/0.1/
+  vcard: http://www.w3.org/2006/vcard/ns#
+  skos: http://www.w3.org/2004/02/skos/core#
+  xsd: http://www.w3.org/2001/XMLSchema#
+
+default_prefix: dcat
+default_range: string
+
+imports:
+  - linkml:types
+
+types:
+  anyURI:
+    uri: xsd:anyURI
+    base: str
+
+classes:
+
+  Catalog:
+    class_uri: dcat:Catalog
+    slots:
+      - title
+      - description
+      - publisher
+      - dataset
+
+  Dataset:
+    class_uri: dcat:Dataset
+    slots:
+      - identifier
+      - title
+      - description
+      - keyword
+      - theme
+      - publisher
+      - contact_point
+      - distribution
+
+  Distribution:
+    class_uri: dcat:Distribution
+    slots:
+      - access_url
+      - download_url
+      - format
+
+  DataService:
+    class_uri: dcat:DataService
+    slots:
+      - title
+      - endpoint_url
+      - serves_dataset
+
+  Agent:
+    class_uri: foaf:Agent
+    slots:
+      - name
+
+  Kind:
+    class_uri: vcard:Kind
+    slots:
+      - fn
+      - has_email
+
+  Concept:
+    class_uri: skos:Concept
+    slots:
+      - pref_label
+
+slots:
+
+  identifier:
+    slot_uri: dct:identifier
+    range: string
+
+  title:
+    slot_uri: dct:title
+    range: string
+
+  description:
+    slot_uri: dct:description
+    range: string
+
+  keyword:
+    slot_uri: dcat:keyword
+    range: string
+    multivalued: true
+
+  theme:
+    slot_uri: dcat:theme
+    range: Concept
+    multivalued: true
+
+  publisher:
+    slot_uri: dct:publisher
+    range: Agent
+
+  contact_point:
+    slot_uri: dcat:contactPoint
+    range: Kind
+
+  distribution:
+    slot_uri: dcat:distribution
+    range: Distribution
+    multivalued: true
+
+  dataset:
+    slot_uri: dcat:dataset
+    range: Dataset
+    multivalued: true
+
+  serves_dataset:
+    slot_uri: dcat:servesDataset
+    range: Dataset
+    multivalued: true
+
+  access_url:
+    slot_uri: dcat:accessURL
+    range: anyURI
+
+  download_url:
+    slot_uri: dcat:downloadURL
+    range: anyURI
+
+  format:
+    slot_uri: dct:format
+    range: string
+
+  endpoint_url:
+    slot_uri: dcat:endpointURL
+    range: anyURI
+
+  name:
+    slot_uri: foaf:name
+    range: string
+
+  fn:
+    slot_uri: vcard:fn
+    range: string
+
+  has_email:
+    slot_uri: vcard:hasEmail
+    range: anyURI
+
+  pref_label:
+    slot_uri: skos:prefLabel
+    range: string

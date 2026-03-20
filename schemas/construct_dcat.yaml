@@ -1,116 +1,59 @@
-id: https://example.org/construct-dcat
+id: https://example.org/linkml/construct-dcat
 name: construct_dcat
-title: Construct-DCAT thin profile
+title: Construct-DCAT extension
 prefixes:
-  linkml: https://w3id.org/linkml/
-  dcat: http://www.w3.org/ns/dcat#
-  dct: http://purl.org/dc/terms/
   cx: https://example.org/construct-dcat/
-  xsd: http://www.w3.org/2001/XMLSchema#
-default_prefix: cx
-default_range: string
+  dcat: http://www.w3.org/ns/dcat#
 imports:
-  - linkml:types
-
+- dcat_ap_base
+default_prefix: cx
 classes:
   ConstructDataset:
-    description: Construction-aware dataset description aligned with DCAT
-    class_uri: dcat:Dataset
-    tree_root: true
+    is_a: Dataset
     slots:
-      - identifier
-      - title
-      - description
-      - keyword
-      - asset_kind
-      - lifecycle_phase
-      - bim_model_ref
-      - aas_ref
-      - geometry_format
-      - contact_point
-      - distribution
-
-  Distribution:
-    class_uri: dcat:Distribution
-    slots:
-      - access_url
-      - download_url
-      - media_type
-      - format
-
+    - asset_kind
+    - lifecycle_phase
+    - bim_model_ref
+    - aas_ref
+    - geometry_format
+    - something
 slots:
-  identifier:
-    slot_uri: dct:identifier
-    required: true
-    range: string
-  title:
-    slot_uri: dct:title
-    required: true
-    range: string
-  description:
-    slot_uri: dct:description
-    range: string
-  keyword:
-    slot_uri: dcat:keyword
-    multivalued: true
-    range: string
   asset_kind:
     slot_uri: cx:assetKind
-    required: true
     range: AssetKindEnum
   lifecycle_phase:
     slot_uri: cx:lifecyclePhase
     range: LifecyclePhaseEnum
   bim_model_ref:
     slot_uri: cx:bimModelReference
-    range: uriorcurie
+    range: anyURI
   aas_ref:
     slot_uri: cx:aasReference
-    range: uriorcurie
+    range: anyURI
   geometry_format:
     slot_uri: cx:geometryFormat
     range: GeometryFormatEnum
-  contact_point:
-    slot_uri: dcat:contactPoint
-    range: string
-  distribution:
-    slot_uri: dcat:distribution
-    multivalued: true
-    range: Distribution
-    required: true
-  access_url:
-    slot_uri: dcat:accessURL
-    range: uriorcurie
-  download_url:
-    slot_uri: dcat:downloadURL
-    range: uriorcurie
-  media_type:
-    slot_uri: dcat:mediaType
-    range: string
-  format:
-    slot_uri: dct:format
-    range: string
-
+  something:
+    range: ''
+    required: false
+    multivalued: false
 enums:
   AssetKindEnum:
     permissible_values:
-      building:
-      bridge:
-      room:
-      hvac_system:
-      facade_element:
-      construction_equipment:
+      building: null
+      bridge: null
+      tunnel: null
+      road: null
+      hvac_system: null
   LifecyclePhaseEnum:
     permissible_values:
-      design:
-      construction:
-      operation:
-      renovation:
-      demolition:
+      design: null
+      construction: null
+      operation: null
+      demolition: null
   GeometryFormatEnum:
     permissible_values:
-      ifc:
-      gltf:
-      obj:
-      step:
-      pointcloud:
+      ifc: null
+      gltf: null
+      obj: null
+      pointcloud: null

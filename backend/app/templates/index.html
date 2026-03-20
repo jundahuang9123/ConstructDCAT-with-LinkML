@@ -92,9 +92,22 @@
 
           const data = await res.json();
 
-          mermaid.initialize({ startOnLoad: false });
-          const { svg } = await mermaid.render("umlDiagramSvg", data.mermaid);
-          diagram.innerHTML = svg;
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: "dark",
+            themeVariables: {
+              primaryColor: "#1e293b",
+              primaryBorderColor: "#a78bfa",
+              primaryTextColor: "#e2e8f0",
+              lineColor: "#e2e8f0",
+              textColor: "#e2e8f0",
+              classText: "#e2e8f0",
+              fontSize: "14px"
+            }
+          });
+
+          const renderResult = await mermaid.render("umlDiagramSvg", data.mermaid);
+          diagram.innerHTML = renderResult.svg;
         } catch (err) {
           diagram.textContent = "Failed to load UML";
           console.error("UML render error:", err);

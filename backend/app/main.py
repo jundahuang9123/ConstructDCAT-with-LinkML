@@ -143,64 +143,84 @@ def export_turtle(payload: dict[str, Any]) -> PlainTextResponse:
 
 @app.get("/schema/uml")
 def get_uml():
-    schema_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
-    with open(schema_path, encoding="utf-8") as f:
-        schema = yaml.safe_load(f)
+    base_path = BASE_DIR / "schemas" / "dcat_ap_base.yaml"
+    ext_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
 
-    classes = schema.get("classes", {})
-    slots = schema.get("slots", {})
-    uml = "classDiagram\n"
+    with open(base_path, encoding="utf-8") as f:
+        base_schema = yaml.safe_load(f)
 
-    # These are the fields we consider part of standard DCAT/DC Terms
-    DCAT_FIELDS = {
-        "identifier",
-        "title",
-        "description",
-        "keyword",
-        "contact_point",
-        "distribution",
-        "access_url",
-        "download_url",
-        "media_type",
-        "format",
-        }
+    with open(ext_path, encoding="utf-8") as f:
+        ext_schema = yaml.safe_load(f)
 
-    slot_def = slots.get(slot_name, {})
-    slot_range = slot_def.get("range", "string")
+    classes = {}
+    classes.update(base_schema.get("classes", {}))
+    classes.update(ext_schema.get("classes", {}))
 
-    required = slot_def.get("required", False)
-    multivalued = slot_def.get("multivalued", False)
+    slots = {}
+    slots.update(base_schema.get("slots", {}))
+    slots.update(ext_schema.get("slots", {}))
 
-    # cardinality label
-    if required and multivalued:
-        card = "[1..*]"
-    elif required:
-        card = "[1]"
-    elif multivalued:
-        card = "[*]"
-    else:
-        card = "[0..1]"
+    enums = {}
+    enums.update(base_schema.get("enums", {}))
+    enums.update(ext_schema.get("enums", {}))
 
-    enum = schema.get("enums", {}).get(slot_range)
+    uml = "classDiagram\n  direction LR\n"
 
-    if enum:
-        values = ",".join(enum.get("permissible_values", {}).keys())
-        uml += f"    {slot_name} : {slot_range} {card} [{values}]\n"
-    else:
-        uml += f"    {slot_name} : {slot_range} {card}\n"
-
-    # LOOP 2:
-    # Build relationship arrows between classes
-    # Example: ConstructDataset --> Distribution : distribution
     for cls, content in classes.items():
-        for slot_name in content.get("slots", []):
+        uml += f"  class {cls} {{\n"
+
+        all_slots = list(content.get("slots", []))
+
+        parent = content.get("is_a")
+        if parent and parent in classes:
+            parent_slots = classes[parent].get("slots", [])
+            all_slots = list(parent_slots) + all_slots
+
+        for slot_name in all_slots:
+            slot_def = slots.get(slot_name, {})
+            slot_range = slot_def.get("range", "string")
+
+            required = slot_def.get("required", False)
+            multivalued = slot_def.get("multivalued", False)
+
+            if required and multivalued:
+                card = "[1..*]"
+            elif required:
+                card = "[1]"
+            elif multivalued:
+                card = "[*]"
+            else:
+                card = "[0..1]"
+
+            enum = enums.get(slot_range)
+            if enum:
+                values = ",".join(enum.get("permissible_values", {}).keys())
+                uml += f"    {slot_name} : {slot_range} {card} [{values}]\n"
+            else:
+                uml += f"    {slot_name} : {slot_range} {card}\n"
+
+        uml += "  }\n"
+
+    for cls, content in classes.items():
+        all_slots = list(content.get("slots", []))
+
+        parent = content.get("is_a")
+        if parent and parent in classes:
+            all_slots = list(classes[parent].get("slots", [])) + all_slots
+            uml += f"  {cls} --|> {parent}\n"
+
+        for slot_name in all_slots:
             slot_def = slots.get(slot_name, {})
             slot_range = slot_def.get("range")
             if slot_range in classes:
-                uml += f"  {cls} --> {slot_range} : {slot_name}\n"
+                uml += f"  {cls} -->|{slot_name}| {slot_range}\n"
+
+    uml += """
+classDef default fill:#1e293b,stroke:#a78bfa,stroke-width:2px,color:#e2e8f0;
+linkStyle default stroke:#e2e8f0,stroke-width:2px;
+"""
 
     return {"mermaid": uml}
-
 
 @app.post("/schema/add-slot")
 def add_slot(payload: dict):
