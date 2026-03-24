@@ -11,7 +11,7 @@
     <main class="container">
       <header>
         <h1>Construct-DCAT Onboarding</h1>
-        <p>No npm required. Edit the JSON payload, validate it, export RDF, and discuss schema changes visually.</p>
+        <p>Edit your dataset payload, validate it, export RDF, and discuss schema changes visually, as well as SHACL generation.</p>
       </header>
 
       <section class="panel">
@@ -20,6 +20,8 @@
           <button id="validate">Validate</button>
           <button id="export-jsonld">Export JSON-LD</button>
           <button id="export-turtle">Export Turtle</button>
+          <button onclick="exportSHACL()">Export SHACL</button>
+          <button onclick="exportSchemaRDF()">Export Schema RDF</button>
         </div>
         <label for="payload">Dataset payload</label>
         <textarea id="payload" spellcheck="false">{{ example | tojson(indent=2) }}</textarea>
@@ -43,8 +45,10 @@
 
       <section class="panel">
         <h2>Edit Property</h2>
+
         <input id="slot-name" placeholder="slot name (e.g. project_phase)" />
-        <input id="slot-type" placeholder="type (e.g. string, Distribution, AssetKindEnum)" />
+
+        <select id="slot-type"></select>
 
         <label>
           <input type="checkbox" id="slot-required" />
@@ -63,8 +67,10 @@
       </section>
 
       <section class="panel">
-        <h2>Edit Enum</h2>
-        <input id="enum-name" placeholder="Enum (e.g. AssetKindEnum)" />
+        <h2>Edit Enum Values</h2>
+
+        <select id="enum-name"></select>
+
         <input id="enum-value" placeholder="Value (e.g. tunnel)" />
 
         <div class="toolbar">
@@ -106,11 +112,46 @@
             }
           });
 
-          const renderResult = await mermaid.render("umlDiagramSvg", data.mermaid);
+          const renderResult = await mermaid.render(
+            "umlDiagramSvg_" + Date.now(),
+            data.mermaid
+          );
           diagram.innerHTML = renderResult.svg;
         } catch (err) {
           diagram.textContent = "Failed to load UML";
           console.error("UML render error:", err);
+        }
+      }
+
+      async function loadSchemaOptions() {
+        try {
+          const res = await fetch("/schema/options");
+          if (!res.ok) {
+            throw new Error("HTTP " + res.status);
+          }
+
+          const data = await res.json();
+
+          const slotType = document.getElementById("slot-type");
+          const enumName = document.getElementById("enum-name");
+
+          slotType.innerHTML = "";
+          enumName.innerHTML = "";
+
+          const addOption = (select, value) => {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = value;
+            select.appendChild(opt);
+          };
+
+          data.primitives.forEach(v => addOption(slotType, v));
+          data.classes.forEach(v => addOption(slotType, v));
+          data.enums.forEach(v => addOption(slotType, v));
+
+          data.enums.forEach(v => addOption(enumName, v));
+        } catch (err) {
+          console.error("Schema options load error:", err);
         }
       }
 
@@ -144,7 +185,8 @@
           })
         });
 
-        loadUML();
+        await loadSchemaOptions();
+        await loadUML();
       }
 
       async function deleteSlot() {
@@ -161,7 +203,8 @@
           })
         });
 
-        loadUML();
+        await loadSchemaOptions();
+        await loadUML();
       }
 
       async function addEnum() {
@@ -179,7 +222,8 @@
           })
         });
 
-        loadUML();
+        await loadSchemaOptions();
+        await loadUML();
       }
 
       async function deleteEnumValue() {
@@ -197,10 +241,47 @@
           })
         });
 
-        loadUML();
+        await loadSchemaOptions();
+        await loadUML();
+      }
+      async function exportSHACL() {
+        const output = document.getElementById("export-output");
+
+        try {
+          const res = await fetch("/schema/export/shacl");
+          if (!res.ok) {
+            throw new Error("HTTP " + res.status);
+          }
+
+          const text = await res.text();
+          output.textContent = text;
+        } catch (err) {
+          output.textContent = "Failed to export SHACL";
+          console.error("SHACL export error:", err);
+        }
       }
 
-      window.addEventListener("DOMContentLoaded", loadUML);
+      async function exportSchemaRDF() {
+        const output = document.getElementById("export-output");
+
+        try {
+          const res = await fetch("/schema/export/rdf");
+          if (!res.ok) {
+            throw new Error("HTTP " + res.status);
+          }
+
+          const text = await res.text();
+          output.textContent = text;
+        } catch (err) {
+          output.textContent = "Failed to export Schema RDF";
+          console.error("Schema RDF export error:", err);
+        }
+      }
+      
+      window.addEventListener("DOMContentLoaded", async () => {
+        await loadSchemaOptions();
+        await loadUML();
+      });
     </script>
   </body>
 </html>

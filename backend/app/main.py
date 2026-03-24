@@ -1,6 +1,9 @@
 from __future__ import annotations
 from fastapi.staticfiles import StaticFiles
 
+from rdflib import BNode, RDFS, XSD
+from rdflib.collection import Collection
+
 import json
 import yaml
 from pathlib import Path
@@ -140,6 +143,32 @@ def export_turtle(payload: dict[str, Any]) -> PlainTextResponse:
     g = payload_to_graph(payload)
     ttl = g.serialize(format='turtle')
     return PlainTextResponse(ttl, media_type='text/turtle')
+
+@app.get("/schema/options")
+def get_schema_options():
+    base_path = BASE_DIR / "schemas" / "dcat_ap_base.yaml"
+    ext_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
+
+    with open(base_path, encoding="utf-8") as f:
+        base_schema = yaml.safe_load(f)
+
+    with open(ext_path, encoding="utf-8") as f:
+        ext_schema = yaml.safe_load(f)
+
+    classes = {}
+    classes.update(base_schema.get("classes", {}))
+    classes.update(ext_schema.get("classes", {}))
+
+    enums = {}
+    enums.update(base_schema.get("enums", {}))
+    enums.update(ext_schema.get("enums", {}))
+
+    return {
+        "classes": sorted(list(classes.keys())),
+        "enums": sorted(list(enums.keys())),
+        "primitives": ["string", "anyURI"]
+    }
+
 
 @app.get("/schema/uml")
 def get_uml():
@@ -336,3 +365,195 @@ def update_slot_flags(payload: dict):
 
     return {"status": "ok"}
 
+def load_combined_schema() -> dict:
+    base_path = BASE_DIR / "schemas" / "dcat_ap_base.yaml"
+    ext_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
+
+    with open(base_path, encoding="utf-8") as f:
+        base_schema = yaml.safe_load(f)
+
+    with open(ext_path, encoding="utf-8") as f:
+        ext_schema = yaml.safe_load(f)
+
+    combined = {
+        "prefixes": {},
+        "classes": {},
+        "slots": {},
+        "enums": {},
+    }
+
+    combined["prefixes"].update(base_schema.get("prefixes", {}))
+    combined["prefixes"].update(ext_schema.get("prefixes", {}))
+
+    combined["classes"].update(base_schema.get("classes", {}))
+    combined["classes"].update(ext_schema.get("classes", {}))
+
+    combined["slots"].update(base_schema.get("slots", {}))
+    combined["slots"].update(ext_schema.get("slots", {}))
+
+    combined["enums"].update(base_schema.get("enums", {}))
+    combined["enums"].update(ext_schema.get("enums", {}))
+
+    return combined
+
+
+def expand_curie(value: str, prefixes: dict) -> URIRef | None:
+    if not value:
+        return None
+    if value.startswith("http://") or value.startswith("https://"):
+        return URIRef(value)
+    if ":" in value:
+        prefix, local = value.split(":", 1)
+        ns = prefixes.get(prefix)
+        if isinstance(ns, str):
+            return URIRef(ns + local)
+    return None
+
+
+def datatype_for_range(range_name: str):
+    if range_name == "string":
+        return XSD.string
+    if range_name == "integer":
+        return XSD.integer
+    if range_name == "anyURI":
+        return XSD.anyURI
+    return None
+
+
+@app.get("/schema/export/shacl")
+def export_schema_shacl() -> PlainTextResponse:
+    schema = load_combined_schema()
+    prefixes = schema["prefixes"]
+    classes = schema["classes"]
+    slots = schema["slots"]
+    enums = schema["enums"]
+
+    SH = Namespace("http://www.w3.org/ns/shacl#")
+    g = Graph()
+
+    g.bind("sh", SH)
+    g.bind("rdf", RDF)
+    g.bind("rdfs", RDFS)
+    g.bind("xsd", XSD)
+
+    for pfx, uri in prefixes.items():
+        if isinstance(uri, str):
+            g.bind(pfx, Namespace(uri))
+
+    for class_name, class_def in classes.items():
+        class_uri = expand_curie(class_def.get("class_uri", f"https://example.org/{class_name}"), prefixes)
+        if class_uri is None:
+            continue
+
+        shape_uri = URIRef(str(class_uri) + "Shape")
+        g.add((shape_uri, RDF.type, SH.NodeShape))
+        g.add((shape_uri, SH.targetClass, class_uri))
+
+        all_slots = list(class_def.get("slots", []))
+        parent = class_def.get("is_a")
+        if parent and parent in classes:
+            all_slots = list(classes[parent].get("slots", [])) + all_slots
+
+        for slot_name in all_slots:
+            slot_def = slots.get(slot_name, {})
+            slot_uri = expand_curie(slot_def.get("slot_uri", ""), prefixes)
+            if slot_uri is None:
+                continue
+
+            prop_bnode = BNode()
+            g.add((shape_uri, SH.property, prop_bnode))
+            g.add((prop_bnode, SH.path, slot_uri))
+
+            required = slot_def.get("required", False)
+            multivalued = slot_def.get("multivalued", False)
+            slot_range = slot_def.get("range", "string")
+
+            if required:
+                g.add((prop_bnode, SH.minCount, Literal(1)))
+            if not multivalued:
+                g.add((prop_bnode, SH.maxCount, Literal(1)))
+
+            if slot_range in classes:
+                range_uri = expand_curie(classes[slot_range].get("class_uri", ""), prefixes)
+                if range_uri is not None:
+                    g.add((prop_bnode, SH["class"], range_uri))
+            elif slot_range in enums:
+                values = list(enums[slot_range].get("permissible_values", {}).keys())
+                list_node = BNode()
+                Collection(g, list_node, [Literal(v) for v in values])
+                g.add((prop_bnode, SH["in"], list_node))
+            else:
+                dt = datatype_for_range(slot_range)
+                if dt is not None:
+                    g.add((prop_bnode, SH.datatype, dt))
+
+    ttl = g.serialize(format="turtle")
+    return PlainTextResponse(ttl, media_type="text/turtle")
+
+
+@app.get("/schema/export/rdf")
+def export_schema_rdf() -> PlainTextResponse:
+    schema = load_combined_schema()
+    prefixes = schema["prefixes"]
+    classes = schema["classes"]
+    slots = schema["slots"]
+    enums = schema["enums"]
+
+    OWL = Namespace("http://www.w3.org/2002/07/owl#")
+    g = Graph()
+
+    g.bind("rdf", RDF)
+    g.bind("rdfs", RDFS)
+    g.bind("owl", OWL)
+    g.bind("xsd", XSD)
+
+    for pfx, uri in prefixes.items():
+        if isinstance(uri, str):
+            g.bind(pfx, Namespace(uri))
+
+    for class_name, class_def in classes.items():
+        class_uri = expand_curie(class_def.get("class_uri", f"https://example.org/{class_name}"), prefixes)
+        if class_uri is None:
+            continue
+
+        g.add((class_uri, RDF.type, RDFS.Class))
+
+        parent = class_def.get("is_a")
+        if parent and parent in classes:
+            parent_uri = expand_curie(classes[parent].get("class_uri", ""), prefixes)
+            if parent_uri is not None:
+                g.add((class_uri, RDFS.subClassOf, parent_uri))
+
+    for slot_name, slot_def in slots.items():
+        slot_uri = expand_curie(slot_def.get("slot_uri", ""), prefixes)
+        if slot_uri is None:
+            continue
+
+        g.add((slot_uri, RDF.type, RDF.Property))
+
+        slot_range = slot_def.get("range", "string")
+
+        for class_name, class_def in classes.items():
+            all_slots = list(class_def.get("slots", []))
+            parent = class_def.get("is_a")
+            if parent and parent in classes:
+                all_slots = list(classes[parent].get("slots", [])) + all_slots
+
+            if slot_name in all_slots:
+                class_uri = expand_curie(class_def.get("class_uri", ""), prefixes)
+                if class_uri is not None:
+                    g.add((slot_uri, RDFS.domain, class_uri))
+
+        if slot_range in classes:
+            range_uri = expand_curie(classes[slot_range].get("class_uri", ""), prefixes)
+            if range_uri is not None:
+                g.add((slot_uri, RDFS.range, range_uri))
+        else:
+            dt = datatype_for_range(slot_range)
+            if dt is not None:
+                g.add((slot_uri, RDFS.range, dt))
+            elif slot_range in enums:
+                g.add((slot_uri, RDFS.range, RDFS.Literal))
+
+    ttl = g.serialize(format="turtle")
+    return PlainTextResponse(ttl, media_type="text/turtle")
