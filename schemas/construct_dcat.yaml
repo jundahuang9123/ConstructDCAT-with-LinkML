@@ -16,7 +16,6 @@ classes:
     - bim_model_ref
     - aas_ref
     - geometry_format
-    - something
 slots:
   asset_kind:
     slot_uri: cx:assetKind
@@ -33,10 +32,6 @@ slots:
   geometry_format:
     slot_uri: cx:geometryFormat
     range: GeometryFormatEnum
-  something:
-    range: ''
-    required: false
-    multivalued: false
 enums:
   AssetKindEnum:
     permissible_values:

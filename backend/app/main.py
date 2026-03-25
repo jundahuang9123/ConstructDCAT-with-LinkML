@@ -301,6 +301,24 @@ def add_enum_value(payload: dict):
 
     return {"status": "ok"}
 
+@app.post("/schema/add-enum")
+def add_enum(payload: dict):
+    schema_path = BASE_DIR / "schemas" / "construct_dcat.yaml"
+
+    with open(schema_path, encoding="utf-8") as f:
+        schema = yaml.safe_load(f)
+
+    enum_name = payload["enum_name"]
+
+    schema.setdefault("enums", {})[enum_name] = {
+        "permissible_values": {}
+    }
+
+    with open(schema_path, "w", encoding="utf-8") as f:
+        yaml.dump(schema, f, sort_keys=False)
+
+    return {"status": "ok"}
+
 @app.post("/schema/delete-slot")
 def delete_slot(payload: dict):
     schema_path = BASE_DIR / "schemas" / "construct_dcat.yaml"

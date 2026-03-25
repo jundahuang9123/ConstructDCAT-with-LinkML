@@ -69,6 +69,9 @@
       <section class="panel">
         <h2>Edit Enum Values</h2>
 
+        <input id="new-enum-name" placeholder="New Enum (e.g. MaterialTypeEnum)" />
+        <button onclick="createEnum()">Create Enum</button>
+
         <select id="enum-name"></select>
 
         <input id="enum-value" placeholder="Value (e.g. tunnel)" />
@@ -100,23 +103,19 @@
 
           mermaid.initialize({
             startOnLoad: false,
-            theme: "dark",
-            themeVariables: {
-              primaryColor: "#1e293b",
-              primaryBorderColor: "#a78bfa",
-              primaryTextColor: "#e2e8f0",
-              lineColor: "#e2e8f0",
-              textColor: "#e2e8f0",
-              classText: "#e2e8f0",
-              fontSize: "14px"
-            }
+            theme: "dark"
           });
 
           const renderResult = await mermaid.render(
             "umlDiagramSvg_" + Date.now(),
             data.mermaid
           );
+
           diagram.innerHTML = renderResult.svg;
+
+          // 🔥 wait for DOM paint
+          setTimeout(colorUMLClasses, 50);
+
         } catch (err) {
           diagram.textContent = "Failed to load UML";
           console.error("UML render error:", err);
@@ -207,6 +206,23 @@
         await loadUML();
       }
 
+      async function createEnum() {
+        const name = document.getElementById("new-enum-name").value;
+
+        await fetch("/schema/add-enum", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            enum_name: name
+          })
+        });
+
+        await loadSchemaOptions();
+        await loadUML();
+      }
+
       async function addEnum() {
         const enumName = document.getElementById("enum-name").value;
         const value = document.getElementById("enum-value").value;
@@ -277,6 +293,44 @@
           console.error("Schema RDF export error:", err);
         }
       }
+
+      
+      function colorUMLClasses() {
+        const svg = document.querySelector("#diagram svg");
+        if (!svg) return;
+
+        const cxClasses = new Set(["ConstructDataset"]);
+
+        const nodes = svg.querySelectorAll("g");
+
+        nodes.forEach(node => {
+          const text = node.textContent || "";
+
+          // detect class by name appearing in group
+          if (text.includes("ConstructDataset")) {
+            const rect = node.querySelector("rect");
+            if (rect) {
+              rect.style.fill = "#7c3aed";
+              rect.style.stroke = "#c4b5fd";
+              rect.style.strokeWidth = "3px";
+            }
+          }
+
+          // base classes (optional)
+          if (
+            text.includes("Dataset") ||
+            text.includes("Distribution") ||
+            text.includes("Catalog")
+          ) {
+            const rect = node.querySelector("rect");
+            if (rect) {
+              rect.style.fill = "#334155";
+              rect.style.stroke = "#94a3b8";
+            }
+          }
+        });
+      }
+
       
       window.addEventListener("DOMContentLoaded", async () => {
         await loadSchemaOptions();
