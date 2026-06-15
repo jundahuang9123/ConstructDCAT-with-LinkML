@@ -10,12 +10,14 @@ import {
   type AnalysisRequest,
   type AnalysisResponse,
   type ArtifactPayload,
+  type CandidateMetadataAction,
   type CandidateRequirement,
   type ExtractedAttribute,
   type ExtractionStrategy,
   type ExtractionProvenance,
   type NormalizedIntent,
   type ProfileChangeSet,
+  type ProfileGenerationMode,
   type RequirementScope,
   type Rq1DatasetExport,
   type Rq1LocalMergeEvent,
@@ -38,7 +40,7 @@ type WorkbenchView = 'requirements' | 'reuse' | 'changes' | 'constraints';
 type RequirementStatus = CandidateRequirement['status'];
 type RequirementType = CandidateRequirement['requirement_type'];
 type FairDimension = CandidateRequirement['fair_dimensions'][number];
-type EditorHistoryAction = 'edit' | 'approve' | 'reject' | 'mark_needs_review';
+type EditorHistoryAction = 'edit' | 'approve' | 'reject' | 'mark_needs_review' | 'edit_candidate_metadata_action';
 
 const SAMPLE_TEXT =
   'Datasets should indicate the construction asset type they describe. Metadata should include lifecycle phase, access conditions, format, schema version, and semantic anchors to AAS submodels or IFC entities.';
@@ -71,10 +73,41 @@ const REQUIREMENT_SCOPE_OPTIONS: RequirementScope[] = [
 const RESOURCE_TYPES: NormalizedIntent['resource_type'][] = ['Dataset', 'Distribution', 'Catalog', 'DataService', 'Agent', 'Concept', 'Unknown'];
 const VALUE_KINDS: NormalizedIntent['value_kind'][] = ['literal', 'uri', 'controlled_concept', 'class_reference', 'date', 'agent', 'distribution', 'unknown'];
 const OBLIGATION_HINTS: NormalizedIntent['obligation_hint'][] = ['mandatory', 'recommended', 'optional', 'unknown'];
+const METADATA_ACTIONS: CandidateMetadataAction['action'][] = [
+  'reuse_existing_term',
+  'specialize_existing_term',
+  'create_extension',
+  'add_constraint',
+  'add_usage_note',
+  'no_action',
+];
+const RQ1_CODEBOOK_SUMMARY = {
+  schema_version: 'rq1-codebook-v1',
+  valid_requirement_conditions: [
+    'Describes catalog, dataset, distribution, data service, or profile metadata rather than internal source content.',
+    'Supports discovery, assessment, comparison, access, reuse, or selection.',
+    'Can be represented by DCAT/DCAT-AP reuse or a justified profile extension.',
+  ],
+  exclude_as_not_rq1: [
+    'internal_instance_data',
+    'per_object_attribute',
+    'engineering_calculation',
+    'geometry_detail',
+    'sensor_measurement_value',
+    'ontology_class_mirroring',
+    'implementation_detail',
+  ],
+};
+const WORKBENCH_STARTED_AT = new Date().toISOString();
+const WORKBENCH_SESSION_ID = `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+const WORKBENCH_REVIEWER_ID = window.localStorage.getItem('rqReviewerId') || 'local-reviewer';
 
 export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkbenchProps) {
+  const schema = useEditorStore((state) => state.schema);
   const mergeSchema = useEditorStore((state) => state.mergeSchema);
   const [view, setView] = useState<WorkbenchView>(initialView);
+  const [sourceCorpusId, setSourceCorpusId] = useState('pilot-corpus');
+  const [cqGuided, setCqGuided] = useState(true);
   const [text, setText] = useState(SAMPLE_TEXT);
   const [strategy, setStrategy] = useState<ExtractionStrategy>('rules');
   const [taskText, setTaskText] = useState('');
@@ -94,6 +127,7 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
   const [shacl, setShacl] = useState('');
   const [generatedProfile, setGeneratedProfile] = useState<SchemaModel | null>(null);
   const [profileChanges, setProfileChanges] = useState<ProfileChangeSet | null>(null);
+  const [profileMode, setProfileMode] = useState<ProfileGenerationMode>('minimal');
   const [validationNotes, setValidationNotes] = useState<string[]>([]);
   const [draggingArtifacts, setDraggingArtifacts] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -129,8 +163,8 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
   );
 
   const requestPayload = useMemo<AnalysisRequest>(
-    () => ({ text, artifacts, strategy, user_tasks: userTasks }),
-    [artifacts, strategy, text, userTasks],
+    () => ({ source_corpus_id: sourceCorpusId, text, artifacts, strategy, user_tasks: userTasks, cq_guided: cqGuided }),
+    [artifacts, cqGuided, sourceCorpusId, strategy, text, userTasks],
   );
 
   const filteredRequirements = useMemo(
@@ -221,8 +255,9 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
     }
   }, [analysis, onStatus, requestPayload, requirements]);
 
-  const runProfileChanges = useCallback(async () => {
+  const runProfileChanges = useCallback(async (modeOverride?: ProfileGenerationMode) => {
     // RQ2 step 1: approved requirements -> reviewable profile change proposals.
+    const mode = modeOverride ?? profileMode;
     const approved = requirements.filter((requirement) => requirement.status === 'approved');
     if (!approved.length) {
       onStatus('Approve at least one requirement before generating profile changes (RQ2 consumes approved requirements only).');
@@ -231,16 +266,22 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
     }
     setBusy(true);
     setView('changes');
-    onStatus('Generating reviewable profile change proposals from approved requirements...');
+    onStatus(
+      mode === 'minimal'
+        ? 'Generating a minimal set of primary profile actions from approved requirements...'
+        : 'Generating all candidate profile actions (exploratory mode)...',
+    );
     try {
-      const result = await generateProfileChanges({ requirements, approved_only: true });
+      const result = await generateProfileChanges({ requirements, approved_only: true, mode });
       setProfileChanges(result);
       setShacl('');
       setGeneratedProfile(null);
       setValidationNotes([]);
       const needsReview = result.changes.filter((change) => change.review_status === 'needs_review').length;
+      const discovered = Number(result.summary_metrics.discovered_candidate_term_count ?? 0);
       onStatus(
-        `Generated ${result.changes.length} profile change proposal(s) from ${approved.length} approved requirement(s)` +
+        `Generated ${result.changes.length} ${mode === 'minimal' ? 'primary' : 'candidate'} profile change(s) ` +
+          `from ${approved.length} approved requirement(s) (${discovered} candidate term(s) discovered)` +
           (needsReview ? ` - ${needsReview} need(s) review.` : '.'),
       );
     } catch (error) {
@@ -249,7 +290,7 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
     } finally {
       setBusy(false);
     }
-  }, [onStatus, requirements]);
+  }, [onStatus, profileMode, requirements]);
 
   const runGenerateDraft = useCallback(async () => {
     // RQ2 step 2: accepted profile changes -> LinkML draft + SHACL (review before merging).
@@ -257,7 +298,7 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
     setBusy(true);
     onStatus('Generating LinkML profile draft and SHACL from accepted profile changes...');
     try {
-      const result = await generateProfileDraft({ profile_change_set: profileChanges, accepted_only: true });
+      const result = await generateProfileDraft({ profile_change_set: profileChanges, accepted_only: true, base_schema: schema });
       setShacl(result.shacl);
       setGeneratedProfile(result.profile_draft);
       setValidationNotes(result.validation_notes);
@@ -269,7 +310,7 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
     } finally {
       setBusy(false);
     }
-  }, [onStatus, profileChanges]);
+  }, [onStatus, profileChanges, schema]);
 
   const runExportRq2 = useCallback(async () => {
     if (!profileChanges) return;
@@ -279,6 +320,7 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
       const approvedCount = requirements.filter((requirement) => requirement.status === 'approved').length;
       const pkg = await exportRq2Package({
         profile_change_set: profileChanges,
+        base_schema: schema,
         approved_requirement_count: approvedCount,
         accepted_only: true,
       });
@@ -290,12 +332,34 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
     } finally {
       setBusy(false);
     }
-  }, [onStatus, profileChanges, requirements]);
+  }, [onStatus, profileChanges, requirements, schema]);
 
   const updateProfileChange = useCallback((id: string, reviewStatus: 'candidate' | 'accepted' | 'rejected' | 'needs_review') => {
     setProfileChanges((current) =>
       current
-        ? { ...current, changes: current.changes.map((change) => (change.id === id ? { ...change, review_status: reviewStatus } : change)) }
+        ? {
+            ...current,
+            changes: current.changes.map((change) => (change.id === id ? { ...change, review_status: reviewStatus } : change)),
+            review_history: [
+              ...(current.review_history ?? []),
+              {
+                timestamp: new Date().toISOString(),
+                reviewer_id: WORKBENCH_REVIEWER_ID,
+                session_id: WORKBENCH_SESSION_ID,
+                action:
+                  reviewStatus === 'accepted'
+                    ? 'accept_profile_change'
+                    : reviewStatus === 'rejected'
+                      ? 'reject_profile_change'
+                      : reviewStatus === 'needs_review'
+                        ? 'mark_profile_change_needs_review'
+                        : 'edit_profile_change_review_status',
+                profile_change_id: id,
+                old_status: current.changes.find((change) => change.id === id)?.review_status ?? null,
+                new_status: reviewStatus,
+              },
+            ],
+          }
         : current,
     );
   }, []);
@@ -418,12 +482,17 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
 
   function mergeDraft() {
     if (!generatedProfile) return;
+    if (validationNotes.some((note) => note.includes('not present in the supplied base schema'))) {
+      onStatus('Generated draft references a base class missing from the active editor schema. Resolve the validation note before merging.');
+      return;
+    }
     mergeSchema(generatedProfile);
     onStatus('Merged generated requirement profile draft into the visual editor. Review before saving.');
   }
 
   return (
     <main className="requirement-workbench">
+      <WorkflowGuide analysis={analysis} profileChanges={profileChanges} view={view} />
       <section
         className={`requirement-input-panel ${draggingArtifacts ? 'requirement-input-panel--dragging' : ''}`}
         onDragEnter={(event) => {
@@ -458,6 +527,24 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
           <FileSearch size={18} />
           <span>Drop artifacts</span>
           <small>Text, AAS JSON, AASX, DCAT/RDF, IFC</small>
+        </div>
+
+        <div className="study-setup-grid">
+          <label>
+            Source corpus ID
+            <input onChange={(event) => setSourceCorpusId(event.target.value)} value={sourceCorpusId} />
+          </label>
+          <label className="toggle-row">
+            <input checked={cqGuided} onChange={(event) => setCqGuided(event.target.checked)} type="checkbox" />
+            CQ-guided extraction
+          </label>
+        </div>
+
+        <div className="input-boundary-note">
+          <strong>Extraction input</strong>
+          <span>source documents, competency questions, and user tasks</span>
+          <strong>Held out</strong>
+          <span>expert reference requirements, expected answer sets, and manually curated gold requirements</span>
         </div>
 
         <textarea aria-label="Requirement text" className="requirement-textarea" onChange={(event) => setText(event.target.value)} value={text} />
@@ -552,6 +639,11 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
             approvedCount={requirements.filter((requirement) => requirement.status === 'approved').length}
             busy={busy}
             changeSet={profileChanges}
+            mode={profileMode}
+            onChangeMode={(nextMode) => {
+              setProfileMode(nextMode);
+              void runProfileChanges(nextMode);
+            }}
             onExportRq2={() => void runExportRq2()}
             onGenerateDraft={() => void runGenerateDraft()}
             updateProfileChange={updateProfileChange}
@@ -571,7 +663,7 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
                 <Download size={16} />
                 LinkML
               </button>
-              <button disabled={!generatedProfile} onClick={mergeDraft} type="button">
+              <button disabled={!generatedProfile || validationNotes.some((note) => note.includes('not present in the supplied base schema'))} onClick={mergeDraft} type="button">
                 <GitMerge size={16} />
                 Merge Draft
               </button>
@@ -590,6 +682,86 @@ export function RequirementWorkbench({ initialView, onStatus }: RequirementWorkb
         )}
       </section>
     </main>
+  );
+}
+
+function WorkflowGuide({
+  analysis,
+  profileChanges,
+  view,
+}: {
+  analysis: AnalysisResponse | null;
+  profileChanges: ProfileChangeSet | null;
+  view: WorkbenchView;
+}) {
+  const activeStep = view === 'reuse' ? 3 : view === 'changes' ? 4 : view === 'constraints' ? 5 : analysis ? 3 : 1;
+  const steps = [
+    {
+      step: 1,
+      title: 'Sources & Questions',
+      user: 'Load source documents, CQs, and user tasks.',
+      system: 'Stores the study setup and extraction boundary.',
+      export: 'Source corpus id and CQ-guided flag.',
+    },
+    {
+      step: 2,
+      title: 'Extract & Abstract',
+      user: 'Run rules, LLM, or hybrid extraction.',
+      system: 'Evidence units, source signals, grouped discovery needs, and candidate requirements.',
+      export: 'Evidence units, warnings, and funnel metrics.',
+    },
+    {
+      step: 3,
+      title: 'Review Requirements',
+      user: 'Approve, reject, edit, merge, or split catalog-level requirements.',
+      system: 'Reviewed RQ1 state with editor history.',
+      export: 'Reviewed RQ1 dataset.',
+    },
+    {
+      step: 4,
+      title: 'Anchor Changes',
+      user: 'Generate minimal profile-change proposals from approved requirements.',
+      system: 'RQ2 seam: selected changes plus candidate terms as suggestions.',
+      export: 'ProfileChangeSet and decision log.',
+    },
+    {
+      step: 5,
+      title: 'Validate & Export',
+      user: 'Accept changes and generate LinkML, SHACL, and packages.',
+      system: 'Checks active base schema before merge.',
+      export: 'RQ2 package, LinkML draft, SHACL, metrics.',
+    },
+  ];
+  const candidateTerms = Number(profileChanges?.summary_metrics.discovered_candidate_term_count ?? 0);
+  const selectedChanges = Number(profileChanges?.summary_metrics.selected_profile_change_count ?? 0);
+  const reduction = Number(profileChanges?.summary_metrics.reduction_rate ?? 0);
+
+  return (
+    <section className="guided-workflow-shell" aria-label="Guided RQ1 RQ2 workflow">
+      <div className="guided-workflow-shell__header">
+        <div>
+          <h2>Guided RQ1/RQ2 Profile Workbench</h2>
+          <p>Catalog-level discovery requirements become a minimal, reviewed set of profile changes.</p>
+        </div>
+        <div className="guided-workflow-shell__metrics">
+          <span>Candidate terms discovered: <strong>{candidateTerms}</strong></span>
+          <span>Selected profile changes: <strong>{selectedChanges}</strong></span>
+          <span>Reduction: <strong>{Math.round(reduction * 100)}%</strong></span>
+        </div>
+      </div>
+      <div className="workflow-step-grid">
+        {steps.map((step) => (
+          <article className={step.step === activeStep ? 'is-active' : ''} key={step.step}>
+            <span>{step.step}</span>
+            <h3>{step.title}</h3>
+            <p><strong>User</strong>{step.user}</p>
+            <p><strong>System</strong>{step.system}</p>
+            <small>{step.export}</small>
+          </article>
+        ))}
+      </div>
+      <p className="candidate-term-note">Candidate terms are suggestions, not review items. Minimal mode remains the default RQ2 path.</p>
+    </section>
   );
 }
 
@@ -645,6 +817,8 @@ function RequirementReview({
   return (
     <div className="review-workspace">
       <ReviewOverview analysis={analysis} requirements={requirements} />
+      <FunnelMetrics metrics={analysis.funnel_metrics} />
+      <Rq1CodebookPanel />
       <ValidationWarnings requirements={requirements} />
       <div className="requirement-review-grid">
         <section className="requirement-list-panel">
@@ -760,6 +934,35 @@ function ReviewOverview({ analysis, requirements }: { analysis: AnalysisResponse
         <span><strong>{analysis.duplicate_groups.length}</strong> duplicate hints</span>
       </div>
     </section>
+  );
+}
+
+function FunnelMetrics({ metrics }: { metrics: Record<string, unknown> }) {
+  const metric = (key: string) => Number(metrics[key] ?? 0);
+  return (
+    <section className="funnel-metrics" aria-label="Extraction funnel metrics">
+      <span><strong>{metric('evidence_unit_count')}</strong> evidence units</span>
+      <span><strong>{metric('source_signal_count')}</strong> source signals</span>
+      <span><strong>{metric('candidate_requirement_count')}</strong> candidate requirements</span>
+      <span><strong>{metric('discarded_domain_content_count')}</strong> discarded domain-content signals</span>
+      <span><strong>{metric('merged_duplicate_count')}</strong> duplicate reductions</span>
+    </section>
+  );
+}
+
+function Rq1CodebookPanel() {
+  return (
+    <details className="rq1-codebook-panel">
+      <summary>What counts as an RQ1 requirement?</summary>
+      <div>
+        <p>Valid RQ1 candidates describe catalog/dataset/distribution metadata, support discovery or assessment tasks, and can be represented by DCAT/DCAT-AP reuse or a justified extension.</p>
+        <ul>
+          <li>Good: dataset exposes represented asset/entity types for discovery.</li>
+          <li>Exclude: {RQ1_CODEBOOK_SUMMARY.exclude_as_not_rq1.map(humanize).join(', ')}.</li>
+          <li>Held out: expert reference requirements and expected answer sets stay out of extraction and belong in validation.</li>
+        </ul>
+      </div>
+    </details>
   );
 }
 
@@ -953,6 +1156,25 @@ function FairAndActions({
   requirement: CandidateRequirement;
   updateRequirement: (id: string, patch: Partial<CandidateRequirement>) => void;
 }) {
+  function updateAction(index: number, patch: Partial<CandidateMetadataAction>) {
+    const next = requirement.candidate_metadata_actions.map((action, actionIndex) =>
+      actionIndex === index ? { ...action, ...patch } : action,
+    );
+    updateRequirement(requirement.id, { candidate_metadata_actions: next });
+  }
+
+  function updateConstraint(index: number, patch: Partial<NonNullable<CandidateMetadataAction['constraint_hint']>>) {
+    const current = requirement.candidate_metadata_actions[index];
+    updateAction(index, {
+      constraint_hint: {
+        value_kind: current.constraint_hint?.value_kind ?? requirement.normalized_intent.value_kind,
+        obligation: current.constraint_hint?.obligation ?? requirement.normalized_intent.obligation_hint,
+        ...current.constraint_hint,
+        ...patch,
+      },
+    });
+  }
+
   return (
     <div className="fair-action-panel">
       <div>
@@ -985,12 +1207,66 @@ function FairAndActions({
       </label>
 
       <section className="metadata-action-list">
-        <h4>Candidate metadata actions</h4>
+        <h4>Suggested metadata anchors</h4>
         {requirement.candidate_metadata_actions.map((action, index) => (
           <article key={`${action.action}-${index}`}>
-            <strong>{humanize(action.action)}</strong>
-            <code>{action.candidate_terms.join(', ') || 'no term'}</code>
-            <p>{action.rationale}</p>
+            <details>
+              <summary>
+                <strong>{humanize(action.action)}</strong>
+                <code>{action.candidate_terms.join(', ') || 'no term'}</code>
+              </summary>
+              <div className="metadata-action-editor">
+                <label>
+                  Action
+                  <select onChange={(event) => updateAction(index, { action: event.target.value as CandidateMetadataAction['action'] })} value={action.action}>
+                    {METADATA_ACTIONS.map((item) => <option key={item} value={item}>{humanize(item)}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Target class
+                  <select onChange={(event) => updateAction(index, { target_class: event.target.value })} value={action.target_class || requirement.normalized_intent.resource_type}>
+                    {RESOURCE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Candidate terms
+                  <input
+                    onChange={(event) => updateAction(index, { candidate_terms: splitTerms(event.target.value) })}
+                    value={action.candidate_terms.join(', ')}
+                  />
+                </label>
+                <label>
+                  Cardinality
+                  <input
+                    onChange={(event) => updateConstraint(index, { cardinality: event.target.value || null })}
+                    placeholder="0..n"
+                    value={action.constraint_hint?.cardinality || ''}
+                  />
+                </label>
+                <label>
+                  Constraint value kind
+                  <select
+                    onChange={(event) => updateConstraint(index, { value_kind: event.target.value as NormalizedIntent['value_kind'] })}
+                    value={action.constraint_hint?.value_kind ?? requirement.normalized_intent.value_kind}
+                  >
+                    {VALUE_KINDS.map((kind) => <option key={kind} value={kind}>{humanize(kind)}</option>)}
+                  </select>
+                </label>
+                <label>
+                  Constraint obligation
+                  <select
+                    onChange={(event) => updateConstraint(index, { obligation: event.target.value as NormalizedIntent['obligation_hint'] })}
+                    value={action.constraint_hint?.obligation ?? requirement.normalized_intent.obligation_hint}
+                  >
+                    {OBLIGATION_HINTS.map((hint) => <option key={hint} value={hint}>{humanize(hint)}</option>)}
+                  </select>
+                </label>
+                <label className="metadata-action-editor__wide">
+                  Rationale
+                  <textarea onChange={(event) => updateAction(index, { rationale: event.target.value })} value={action.rationale} />
+                </label>
+              </div>
+            </details>
           </article>
         ))}
       </section>
@@ -1169,6 +1445,8 @@ function ProfileChangesView({
   approvedCount,
   busy,
   changeSet,
+  mode,
+  onChangeMode,
   onExportRq2,
   onGenerateDraft,
   updateProfileChange,
@@ -1176,6 +1454,8 @@ function ProfileChangesView({
   approvedCount: number;
   busy: boolean;
   changeSet: ProfileChangeSet | null;
+  mode: ProfileGenerationMode;
+  onChangeMode: (mode: ProfileGenerationMode) => void;
   onExportRq2: () => void;
   onGenerateDraft: () => void;
   updateProfileChange: (id: string, reviewStatus: 'candidate' | 'accepted' | 'rejected' | 'needs_review') => void;
@@ -1188,6 +1468,9 @@ function ProfileChangesView({
 
   const acceptedCount = changeSet.changes.filter((change) => change.review_status === 'accepted').length;
   const needsReviewCount = changeSet.changes.filter((change) => change.review_status === 'needs_review').length;
+  const metrics = changeSet.summary_metrics;
+  const metric = (key: string) => Number(metrics[key] ?? 0);
+  const percent = (key: string) => `${Math.round(metric(key) * 100)}%`;
 
   return (
     <section className="profile-changes-view">
@@ -1195,16 +1478,49 @@ function ProfileChangesView({
         <div>
           <h3>Review proposed profile changes</h3>
           <p>
-            Generated from {approvedCount} approved requirement(s) against the {changeSet.profile_base} base. Accept or reject each change; the
+            RQ2 seam: approved RQ1 requirements become minimal profile-change proposals. Generated from {approvedCount} approved requirement(s) against the {changeSet.profile_base} base. Accept or reject each change; the
             LinkML draft and SHACL are generated from accepted changes only.
           </p>
         </div>
         <div className="review-overview__stats">
-          <span><strong>{changeSet.changes.length}</strong> proposed</span>
+          <span><strong>{changeSet.changes.length}</strong> {mode === 'minimal' ? 'primary' : 'candidate'}</span>
           <span><strong>{acceptedCount}</strong> accepted</span>
           <span><strong>{needsReviewCount}</strong> needs review</span>
         </div>
       </div>
+
+      <div className="profile-mode-toggle" role="radiogroup" aria-label="Profile generation mode">
+        <button
+          aria-pressed={mode === 'minimal'}
+          className={mode === 'minimal' ? 'is-active' : ''}
+          disabled={busy}
+          onClick={() => mode !== 'minimal' && onChangeMode('minimal')}
+          type="button"
+        >
+          Minimal profile
+          <small>One primary, reuse-first action per requirement (default)</small>
+        </button>
+        <button
+          aria-pressed={mode === 'exploratory'}
+          className={mode === 'exploratory' ? 'is-active' : ''}
+          disabled={busy}
+          onClick={() => mode !== 'exploratory' && onChangeMode('exploratory')}
+          type="button"
+        >
+          Exploratory
+          <small>Show every candidate action (debugging / full recall)</small>
+        </button>
+      </div>
+
+      <dl className="profile-metrics" aria-label="Minimal-profile metrics">
+        <div><dt>Candidate terms</dt><dd>{metric('discovered_candidate_term_count')}</dd></div>
+        <div><dt>Selected changes</dt><dd>{metric('selected_profile_change_count')}</dd></div>
+        <div><dt>Reduction</dt><dd>{percent('reduction_rate')}</dd></div>
+        <div><dt>Reuse</dt><dd>{percent('reuse_rate')}</dd></div>
+        <div><dt>Extension</dt><dd>{percent('extension_rate')}</dd></div>
+        <div><dt>Requirements addressed</dt><dd>{metric('requirements_addressed_count')}</dd></div>
+        <div><dt>Avg changes / requirement</dt><dd>{metric('average_profile_changes_per_requirement')}</dd></div>
+      </dl>
 
       {changeSet.warnings.length ? (
         <ul className="validation-notes" aria-label="Profile change warnings">
@@ -1235,6 +1551,16 @@ function ProfileChangesView({
               {change.multivalued ? ' - multivalued' : ''} - from {change.source_requirement_ids.join(', ')} - {change.evidence_ids.length} evidence ref(s)
             </small>
             <p>{change.rationale}</p>
+            {change.alternative_terms && change.alternative_terms.length ? (
+              <details className="candidate-suggestions">
+                <summary>{change.alternative_terms.length} other candidate term(s) considered</summary>
+                <ul>
+                  {change.alternative_terms.map((term) => (
+                    <li key={term}><code>{term}</code></li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
             {change.warnings.length ? (
               <ul className="validation-notes">
                 {change.warnings.map((warning) => (
@@ -1257,6 +1583,17 @@ function ProfileChangesView({
           </article>
         ))}
       </div>
+
+      {changeSet.discovered_candidate_terms.length ? (
+        <details className="candidate-suggestions candidate-suggestions--all">
+          <summary>{changeSet.discovered_candidate_terms.length} candidate term(s) discovered (suggestions, not review items)</summary>
+          <ul>
+            {changeSet.discovered_candidate_terms.map((term) => (
+              <li key={term}><code>{term}</code></li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
 
       <div className="constraint-preview__actions">
         <button className="primary" disabled={busy || acceptedCount === 0} onClick={onGenerateDraft} type="button">
@@ -1286,6 +1623,7 @@ function applyRequirementPatch(requirement: CandidateRequirement, patch: Partial
     'normalized_statement',
     'requirement_type',
     'requirement_scope',
+    'candidate_metadata_actions',
     'fair_dimensions',
     'review_notes',
     'status',
@@ -1297,7 +1635,11 @@ function applyRequirementPatch(requirement: CandidateRequirement, patch: Partial
         String(field),
         requirement[field],
         patch[field],
-        field === 'status' ? actionForStatusChange(patch.status) : 'edit',
+        field === 'status'
+          ? actionForStatusChange(patch.status)
+          : field === 'candidate_metadata_actions'
+            ? 'edit_candidate_metadata_action'
+            : 'edit',
       ),
     );
   return history.length ? { ...updated, provenance: appendEditorHistory(requirement.provenance, history) } : updated;
@@ -1330,6 +1672,8 @@ function appendEditorHistory(provenance: ExtractionProvenance | null | undefined
 function editorHistoryEntry(field: string, oldValue: unknown, newValue: unknown, action: EditorHistoryAction) {
   return {
     timestamp: new Date().toISOString(),
+    reviewer_id: WORKBENCH_REVIEWER_ID,
+    session_id: WORKBENCH_SESSION_ID,
     field,
     old_value: oldValue ?? null,
     new_value: newValue ?? null,
@@ -1358,10 +1702,19 @@ function buildRq1DatasetExport(
     schema_version: 'rq1-requirement-dataset-v1',
     export_kind: 'reviewed_frontend_state',
     generated_at: new Date().toISOString(),
+    source_corpus_id: analysis.study_setup?.source_corpus_id as string | null | undefined,
+    reviewer_id: WORKBENCH_REVIEWER_ID,
+    session_id: WORKBENCH_SESSION_ID,
+    started_at: WORKBENCH_STARTED_AT,
+    completed_at: new Date().toISOString(),
+    duration_ms: Date.now() - Date.parse(WORKBENCH_STARTED_AT),
+    study_setup: analysis.study_setup,
+    rq1_codebook: RQ1_CODEBOOK_SUMMARY,
     strategy_requested: analysis.strategy,
     strategy_used: analysis.strategy,
     summary_metrics: {
       requirement_count: requirements.length,
+      funnel_metrics: analysis.funnel_metrics,
       evidence_unit_count: analysis.evidence_units.length,
       duplicate_group_count: analysis.duplicate_groups.length,
       user_task_count: analysis.user_tasks.length,
@@ -1388,6 +1741,7 @@ function buildRq1DatasetExport(
     local_merge_events: localMergeEvents,
     local_split_events: localSplitEvents,
     user_tasks: analysis.user_tasks,
+    funnel_metrics: analysis.funnel_metrics,
     warnings: analysis.warnings,
     review_editor_history: requirements.map((requirement) => ({
       requirement_id: requirement.id,
@@ -1445,6 +1799,10 @@ function uniqueEvidence(items: SourceEvidence[]) {
 
 function uniqueStrings<T extends string>(items: T[]) {
   return Array.from(new Set(items.filter(Boolean)));
+}
+
+function splitTerms(value: string) {
+  return value.split(/[\s,]+/).map((term) => term.trim()).filter(Boolean);
 }
 
 function humanize(value: string) {

@@ -61,6 +61,14 @@ ProfileChangeType = Literal[
 ProfileChangeReviewStatus = Literal['candidate', 'accepted', 'rejected', 'needs_review']
 ObligationLevel = Literal['mandatory', 'recommended', 'optional', 'unknown']
 
+# RQ2 minimal-profile selection mode.
+#  - ``minimal``      one primary profile action per approved requirement (default);
+#                     candidate terms are ranked and only the best reusable one is
+#                     selected. This keeps the generated application profile minimal.
+#  - ``exploratory``  every candidate term/action becomes a ProfileChange (debugging
+#                     / full-recall view); nothing is filtered away.
+ProfileGenerationMode = Literal['minimal', 'exploratory']
+
 
 class ArtifactPayload(BaseModel):
     name: str = 'artifact'
@@ -101,11 +109,13 @@ class ExtractionProvenance(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
+    source_corpus_id: str | None = None
     text: str | None = None
     artifacts: list[ArtifactPayload] = Field(default_factory=list)
     user_tasks: list[UserTask] = Field(default_factory=list)
     strategy: ExtractionStrategy = 'rules'
     llm_model: str | None = None
+    cq_guided: bool = True
 
 
 class ArtifactSummary(BaseModel):
@@ -215,6 +225,11 @@ class CandidateRequirement(BaseModel):
     fair_rationale: str | None = None
     candidate_metadata_actions: list[CandidateMetadataAction] = Field(default_factory=list)
     supports_user_tasks: list[str] = Field(default_factory=list)
+    # When False (default) the requirement contributes ONE primary profile action
+    # in minimal mode; its candidate terms are treated as interchangeable
+    # suggestions. Set True only when the requirement explicitly mandates several
+    # distinct profile elements (then minimal mode keeps the best term per slot).
+    requires_multiple_elements: bool = False
     validation_evidence: list[str] = Field(default_factory=list)
     validation_status: ValidationStatus = 'needs_review'
     requirement_scope: RequirementScope = 'unknown'
@@ -250,6 +265,7 @@ class CompetencyQuestion(BaseModel):
 
 class AnalysisResponse(BaseModel):
     strategy: ExtractionStrategy = 'rules'
+    study_setup: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[ArtifactSummary] = Field(default_factory=list)
     evidence_units: list[EvidenceUnit] = Field(default_factory=list)
     extracted_attributes: list[ExtractedAttribute] = Field(default_factory=list)
@@ -259,6 +275,7 @@ class AnalysisResponse(BaseModel):
     metadata_candidates: list[MetadataCandidate] = Field(default_factory=list)
     competency_questions: list[CompetencyQuestion] = Field(default_factory=list)
     user_tasks: list[UserTask] = Field(default_factory=list)
+    funnel_metrics: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -361,6 +378,14 @@ class ProfileChange(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
     source_requirement_ids: list[str] = Field(default_factory=list)
     review_status: ProfileChangeReviewStatus = 'candidate'
+    # True when this change is part of the minimal selection. In exploratory mode
+    # every candidate term yields a change; the one that minimal mode would have
+    # picked is flagged ``selected=True`` so the UI can distinguish primary actions
+    # from the additional exploratory suggestions.
+    selected: bool = True
+    # Other candidate terms that were discovered for the same slot/requirement but
+    # not chosen as the primary action. Surfaced as suggestions, not review items.
+    alternative_terms: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -371,7 +396,12 @@ class ProfileChangeSet(BaseModel):
     profile_base: str = 'DCAT-AP'
     profile_namespace: str = 'https://w3id.org/cx#'
     profile_prefix: str = 'cx'
+    mode: ProfileGenerationMode = 'minimal'
     changes: list[ProfileChange] = Field(default_factory=list)
+    # Every candidate term discovered across the approved requirements, kept as
+    # suggestions/evidence (not as items the reviewer must individually validate).
+    discovered_candidate_terms: list[str] = Field(default_factory=list)
+    review_history: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
 
@@ -380,6 +410,9 @@ class GenerateProfileChangesRequest(BaseModel):
     requirement_set: RequirementSet | None = None
     requirements: list[CandidateRequirement] = Field(default_factory=list)
     approved_only: bool = True
+    # 'minimal' (default) selects one primary, reuse-first action per requirement;
+    # 'exploratory' generates every candidate action for debugging / full recall.
+    mode: ProfileGenerationMode = 'minimal'
     base_profile: str = 'DCAT-AP'
     profile_namespace: str = 'https://w3id.org/cx#'
     profile_prefix: str = 'cx'

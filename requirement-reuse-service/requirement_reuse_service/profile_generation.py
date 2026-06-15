@@ -37,12 +37,14 @@ from .term_registry import (
     domain_compatible,
     expand,
     is_extension_term,
+    is_known_prefix,
     is_known_term,
     normalize_resource_type,
     range_for,
     slot_name_for,
-    sort_terms_by_priority,
+    split_prefixed,
     term_info,
+    term_priority,
     vocabulary_label,
 )
 
@@ -82,11 +84,51 @@ DEFAULT_MULTIVALUED_TERMS = {
     'cx:describesAssetType',
 }
 
+GENERIC_REUSED_TERMS = {
+    'dcterms:identifier',
+    'dcterms:title',
+    'dcterms:description',
+    'dcat:keyword',
+    'dcat:theme',
+}
+
+TERM_FIT_KEYWORDS: dict[str, set[str]] = {
+    'dcterms:license': {'license', 'licence', 'reuse policy', 'usage policy'},
+    'dcterms:accessRights': {'access right', 'access condition', 'restricted', 'permission'},
+    'dcterms:rights': {'rights', 'permission'},
+    'dcat:accessURL': {'access url', 'access endpoint'},
+    'dcat:downloadURL': {'download', 'download url'},
+    'dcterms:format': {'format', 'file format'},
+    'dcat:mediaType': {'media type', 'mime'},
+    'dcterms:conformsTo': {'schema', 'standard', 'conformance', 'version'},
+    'dcterms:language': {'language'},
+    'dcterms:spatial': {'spatial', 'location', 'project context'},
+    'dcterms:provenance': {'provenance', 'origin', 'lineage'},
+    'prov:wasDerivedFrom': {'derived', 'source', 'lineage', 'provenance'},
+    'prov:wasAttributedTo': {'attributed', 'responsible', 'agent'},
+    'cx:hasAASSubmodel': {'aas', 'submodel'},
+    'cx:hasIFCEntity': {'ifc', 'entity', 'ifcwall', 'ifcdoor', 'ifcslab'},
+    'cx:describesAssetType': {'asset type', 'construction asset', 'building element', 'equipment'},
+    'cx:hasLifecyclePhase': {'lifecycle', 'life cycle', 'design', 'construction', 'operation', 'maintenance'},
+    'cx:usesOntology': {'ontology', 'vocabulary'},
+    'cx:semanticAnchor': {'semantic anchor', 'semantic id', 'semanticid', 'concept'},
+}
+
 
 def generate_profile_changes(request: GenerateProfileChangesRequest) -> ProfileChangeSet:
-    """Convert reviewed requirements into a reviewable ProfileChangeSet."""
+    """Convert reviewed requirements into a reviewable ProfileChangeSet.
+
+    Candidate terms are treated as *suggestions*, not review obligations. In the
+    default ``minimal`` mode each approved requirement contributes ONE primary,
+    reuse-first profile action; the alternative candidate terms are preserved as
+    suggestions. In ``exploratory`` mode every candidate term/action is emitted
+    for debugging / full recall. Duplicate proposals across requirements are
+    merged into a single ProfileChange that carries all source requirement and
+    evidence ids (redundancy: many requirements can back one change).
+    """
     from .service import stable_id
 
+    mode = request.mode
     source_set_id = request.requirement_set.id if request.requirement_set else None
     requirements = list(request.requirement_set.requirements) if request.requirement_set else list(request.requirements)
 
@@ -115,26 +157,20 @@ def generate_profile_changes(request: GenerateProfileChangesRequest) -> ProfileC
         warnings.append(f'{len(without_actions)} approved requirement(s) have no candidate metadata actions: {", ".join(without_actions[:6])}')
 
     changes: list[ProfileChange] = []
+    discovered_terms: list[str] = []
     # Dedupe key: (resource, slot_name) -> existing change (duplicate requirements share one slot).
     slot_index: dict[tuple[str, str], ProfileChange] = {}
 
     for requirement in selected:
-        for action in requirement.candidate_metadata_actions:
-            if action.action == 'no_action':
-                continue
-            resource = normalize_resource_type(action.target_class) or normalize_resource_type(
-                requirement.normalized_intent.resource_type
-            )
-            if resource not in BASE_CLASSES:
-                warnings.append(
-                    f"Requirement {requirement.id}: target class '{action.target_class or requirement.normalized_intent.resource_type}' "
-                    'is not a profilable DCAT class (Dataset/Distribution/Catalog/DataService); skipped.'
-                )
-                continue
-            change = build_change(requirement, action, resource, request.profile_prefix, stable_id)
-            if change is None:
-                continue
-            key = (resource, change.slot_name or change.id)
+        proposals, requirement_terms, requirement_warnings = rank_requirement_changes(
+            requirement, mode, request.profile_prefix, stable_id, warnings
+        )
+        warnings.extend(requirement_warnings)
+        for term in requirement_terms:
+            if term not in discovered_terms:
+                discovered_terms.append(term)
+        for change in proposals:
+            key = (normalize_resource_type(change.target_class) or change.target_class, change.slot_name or change.id)
             existing = slot_index.get(key)
             if existing is not None:
                 merge_duplicate_change(existing, change)
@@ -142,70 +178,155 @@ def generate_profile_changes(request: GenerateProfileChangesRequest) -> ProfileC
             slot_index[key] = change
             changes.append(change)
 
-    needs_review = [change for change in changes if change.review_status == 'needs_review']
     change_set = ProfileChangeSet(
-        id=stable_id('chg', source_set_id or 'inline', *(change.id for change in changes[:8])),
+        id=stable_id('chg', source_set_id or 'inline', mode, *(change.id for change in changes[:8])),
         source_requirement_set_id=source_set_id,
         created_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
         profile_base=request.base_profile,
         profile_namespace=request.profile_namespace,
         profile_prefix=request.profile_prefix,
+        mode=mode,
         changes=changes,
+        discovered_candidate_terms=sorted(discovered_terms),
         warnings=warnings,
-        summary_metrics={
-            'source_requirement_count': len(requirements),
-            'approved_requirement_count': sum(1 for requirement in requirements if requirement.status == 'approved'),
-            'change_count': len(changes),
-            'needs_review_change_count': len(needs_review),
-            'changes_by_type': count_by(changes, lambda change: change.change_type),
-            'changes_by_target_class': count_by(changes, lambda change: change.target_class),
-        },
+        summary_metrics=build_summary_metrics(requirements, changes, discovered_terms, mode),
     )
     return change_set
 
 
-def build_change(
+def rank_requirement_changes(
+    requirement: CandidateRequirement,
+    mode: str,
+    profile_prefix: str,
+    stable_id,
+    warnings: list[str],
+) -> tuple[list[ProfileChange], list[str], list[str]]:
+    """Build, rank and (in minimal mode) filter one requirement's candidate changes.
+
+    Returns ``(selected_changes, discovered_terms, local_warnings)``.
+
+    Ranking key (lower = preferred), applying semantic fit before reuse priority:
+      1. semantic fit          exact/adequate terms beat generic terms
+      2. term suitability      reusable+in-domain < domain-mismatch < extension < unknown
+      3. reuse priority        DCAT-AP/DCAT/DCTERMS < SKOS/FOAF/PROV < cx: extensions
+      4. verified evidence     requirements with verified evidence first
+      5. competency coverage   requirements linked to a user task / CQ first
+      6. obligation strength   mandatory before recommended before optional
+      7. term name             deterministic tie-break
+    """
+    local_warnings: list[str] = []
+    discovered_terms: list[str] = []
+    scored: list[tuple[tuple, ProfileChange]] = []
+
+    evidence_penalty = 0 if not (requirement.provenance and requirement.provenance.evidence_verified is False) else 1
+    coverage_penalty = 0 if requirement.supports_user_tasks else 1
+
+    for action in requirement.candidate_metadata_actions:
+        if action.action == 'no_action':
+            continue
+        resource = normalize_resource_type(action.target_class) or normalize_resource_type(
+            requirement.normalized_intent.resource_type
+        )
+        if resource not in BASE_CLASSES:
+            local_warnings.append(
+                f"Requirement {requirement.id}: target class '{action.target_class or requirement.normalized_intent.resource_type}' "
+                'is not a profilable DCAT class (Dataset/Distribution/Catalog/DataService); skipped.'
+            )
+            continue
+
+        terms = [term.strip() for term in action.candidate_terms if term and term.strip()]
+        discovered_terms.extend(terms)
+        # Empty action -> single derived placeholder change (needs review).
+        for term in terms or [None]:
+            change = build_change_for_term(requirement, action, resource, term, profile_prefix, stable_id)
+            suitability = term_suitability(term, action.action, resource)
+            key = (
+                semantic_fit_tier(requirement, action, term, resource),
+                suitability,
+                term_priority(term) if term else 9,
+                evidence_penalty,
+                coverage_penalty,
+                -OBLIGATION_RANK.get(change.obligation_level, 0),
+                term or '',
+            )
+            scored.append((key, change))
+
+    if not scored:
+        return [], discovered_terms, local_warnings
+
+    scored.sort(key=lambda item: item[0])
+
+    if mode == 'exploratory':
+        # Preserve every candidate term/action; flag the minimal pick as selected.
+        for index, (_, change) in enumerate(scored):
+            change.selected = index == 0
+        return [change for _, change in scored], discovered_terms, local_warnings
+
+    # Minimal mode: one primary action per requirement, unless it explicitly
+    # requires several distinct elements (then keep the best term per slot).
+    if requirement.requires_multiple_elements:
+        best_by_slot: dict[str, ProfileChange] = {}
+        for _, change in scored:
+            best_by_slot.setdefault(change.slot_name or change.id, change)
+        selected = list(best_by_slot.values())
+    else:
+        selected = [scored[0][1]]
+
+    selected_ids = {id(change) for change in selected}
+    selected_terms = {compact_term(change) for change in selected}
+    for change in selected:
+        change.selected = True
+        change.alternative_terms = [
+            term for term in dict.fromkeys(discovered_terms) if term not in selected_terms
+        ]
+    dropped = [change for _, change in scored if id(change) not in selected_ids]
+    if dropped:
+        local_warnings.append(
+            f'Requirement {requirement.id}: kept {len(selected)} primary profile action(s); '
+            f'{len(dropped)} alternative candidate term(s) retained as suggestions (minimal mode).'
+        )
+    return selected, discovered_terms, local_warnings
+
+
+def build_change_for_term(
     requirement: CandidateRequirement,
     action,
     resource: str,
+    term: str | None,
     profile_prefix: str,
     stable_id,
-) -> ProfileChange | None:
+) -> ProfileChange:
+    """Build a single ProfileChange from a requirement/action and a chosen term."""
     prefixed_class, _, _ = BASE_CLASSES[resource]
-    change_type = ACTION_TO_CHANGE_TYPE.get(action.action)
-    if change_type is None:
-        return None
-    if requirement.requirement_scope == 'controlled_vocabulary' and change_type in {'reuse_property', 'specialize_property'}:
-        change_type = 'add_controlled_vocabulary'
+    change_type = ACTION_TO_CHANGE_TYPE.get(action.action, 'reuse_property')
 
     hint = action.constraint_hint
     obligation = (hint.obligation if hint else None) or requirement.normalized_intent.obligation_hint
     value_kind = (hint.value_kind if hint and hint.value_kind != 'unknown' else None) or requirement.normalized_intent.value_kind
 
-    candidate_terms = sort_terms_by_priority(action.candidate_terms)
     change_warnings: list[str] = []
     review_status = 'candidate'
-    term: str | None = None
 
     if action.action == 'create_extension':
-        term = next((candidate for candidate in candidate_terms if is_extension_term(candidate)), None)
-        if term is None:
-            bad = next((candidate for candidate in candidate_terms if candidate.strip()), None)
-            if bad is not None:
+        change_type = 'create_extension_property'
+        if not (term and is_extension_term(term)):
+            if term:
                 change_warnings.append(
-                    f"Extension proposal uses '{bad}' without the '{EXTENSION_PREFIX}:' prefix; needs review."
+                    f"Extension proposal uses '{term}' without the '{EXTENSION_PREFIX}:' prefix; needs review."
                 )
+            else:
+                change_warnings.append('No extension term provided; needs review before generation.')
             term = f'{profile_prefix}:{derive_slot_name(requirement)}'
             review_status = 'needs_review'
     else:
-        term = next((candidate for candidate in candidate_terms if is_known_term(candidate)), None)
-        if term is None:
-            term = next((candidate for candidate in candidate_terms if candidate.strip()), None)
-            if term is None:
-                change_warnings.append('No candidate term provided; needs review before generation.')
-                term = f'{profile_prefix}:{derive_slot_name(requirement)}'
-            else:
-                change_warnings.append(f"Candidate term '{term}' is not in the local vocabulary catalogue; needs review.")
+        if is_extension_term(term or ''):
+            change_type = 'create_extension_property'
+        elif not term:
+            change_warnings.append('No candidate term provided; needs review before generation.')
+            term = f'{profile_prefix}:{derive_slot_name(requirement)}'
+            review_status = 'needs_review'
+        elif not is_known_term(term):
+            change_warnings.append(f"Candidate term '{term}' is not in the local vocabulary catalogue; needs review.")
             review_status = 'needs_review'
         elif not domain_compatible(term, resource):
             info = term_info(term) or {}
@@ -213,6 +334,9 @@ def build_change(
                 f"Term '{term}' has domain {', '.join(info.get('domain') or [])} but targets {prefixed_class}; needs review."
             )
             review_status = 'needs_review'
+
+    if requirement.requirement_scope == 'controlled_vocabulary' and change_type in {'reuse_property', 'specialize_property'}:
+        change_type = 'add_controlled_vocabulary'
 
     slot_name = slot_name_for(term)
     known = is_known_term(term)
@@ -242,20 +366,145 @@ def build_change(
     )
 
 
+def term_suitability(term: str | None, action: str, resource: str) -> int:
+    """Lower = more suitable. Enforces reuse-before-extension selection.
+
+    A reusable, in-domain standard term (0) always beats an extension term (2),
+    so extensions are only selected when no suitable reused term is available.
+    """
+    if not term:
+        return 5
+    if is_extension_term(term):
+        # A cx: extension is well-formed for an extension action; still ranked
+        # below any reusable standard term so reuse wins when both are present.
+        return 2 if action == 'create_extension' else 3
+    if is_known_term(term):
+        return 0 if domain_compatible(term, resource) else 1
+    if split_prefixed(term) and is_known_prefix(term):
+        return 4  # known prefix, unknown local name -> needs review
+    return 5
+
+
+def semantic_fit_tier(requirement: CandidateRequirement, action, term: str | None, resource: str) -> int:
+    """Lower = better semantic fit for the normalized requirement.
+
+    This deliberately precedes vocabulary priority: a high-priority standard
+    term is preferred only when it adequately expresses the requirement. A
+    generic reused term such as ``dcterms:identifier`` should not beat a
+    construction extension that directly names AAS submodels or IFC entities.
+    """
+    if not term:
+        return 5
+
+    context = ' '.join(
+        filter(
+            None,
+            [
+                requirement.normalized_statement,
+                requirement.raw_statement,
+                requirement.requirement_type,
+                requirement.requirement_scope,
+                requirement.normalized_intent.metadata_need,
+                requirement.normalized_intent.value_kind,
+                action.rationale,
+                ' '.join(action.candidate_terms),
+            ],
+        )
+    ).lower()
+    local = slot_name_for(term).lower()
+    keywords = TERM_FIT_KEYWORDS.get(term, set())
+    local_match = term not in GENERIC_REUSED_TERMS and local in context
+    strong_match = local_match or any(keyword in context for keyword in keywords)
+
+    if is_extension_term(term):
+        return 1 if strong_match else 4
+    if is_known_term(term) and not domain_compatible(term, resource):
+        return 4
+    if strong_match:
+        return 0
+    if reused_term_is_adequate_for_requirement(term, requirement, context):
+        return 1
+    if term in GENERIC_REUSED_TERMS:
+        return 3
+    if is_known_term(term):
+        return 2
+    return 5
+
+
+def reused_term_is_adequate_for_requirement(term: str, requirement: CandidateRequirement, context: str) -> bool:
+    requirement_type = requirement.requirement_type
+    value_kind = requirement.normalized_intent.value_kind
+    if requirement_type == 'access_policy' and term in {'dcterms:license', 'dcterms:accessRights', 'dcterms:rights'}:
+        return True
+    if requirement_type == 'technical_metadata' and term in {'dcterms:format', 'dcat:mediaType', 'dcat:downloadURL', 'dcterms:conformsTo'}:
+        return True
+    if requirement_type == 'quality_provenance' and term in {'dcterms:provenance', 'prov:wasDerivedFrom', 'prov:wasGeneratedBy', 'prov:wasAttributedTo'}:
+        return True
+    if requirement_type == 'descriptive_metadata' and term in {'dcterms:title', 'dcterms:description', 'dcat:keyword', 'dcat:theme', 'dcterms:publisher'}:
+        return True
+    if requirement_type in {'controlled_vocabulary', 'semantic_anchor', 'lifecycle_context'} and value_kind == 'controlled_concept' and term in {'dcat:theme', 'skos:Concept'}:
+        return True
+    if 'schema' in context and term == 'dcterms:conformsTo':
+        return True
+    return False
+
+
 def merge_duplicate_change(existing: ProfileChange, incoming: ProfileChange) -> None:
-    """Fold a duplicate slot proposal into the existing change (no duplicate slots)."""
+    """Fold a duplicate slot proposal into the existing change (no duplicate slots).
+
+    This is the redundancy rule: several requirements supporting the same slot are
+    merged into one ProfileChange carrying all of their requirement and evidence
+    ids rather than producing duplicate proposals.
+    """
     for requirement_id in incoming.source_requirement_ids:
         if requirement_id not in existing.source_requirement_ids:
             existing.source_requirement_ids.append(requirement_id)
     for evidence_id in incoming.evidence_ids:
         if evidence_id not in existing.evidence_ids:
             existing.evidence_ids.append(evidence_id)
+    for term in incoming.alternative_terms:
+        if term not in existing.alternative_terms:
+            existing.alternative_terms.append(term)
     if OBLIGATION_RANK.get(incoming.obligation_level, 0) > OBLIGATION_RANK.get(existing.obligation_level, 0):
         existing.obligation_level = incoming.obligation_level
         existing.required = incoming.required
     existing.warnings.extend(warning for warning in incoming.warnings if warning not in existing.warnings)
     if incoming.review_status == 'needs_review' and existing.review_status == 'candidate':
         existing.review_status = 'needs_review'
+
+
+def build_summary_metrics(
+    requirements: list[CandidateRequirement],
+    changes: list[ProfileChange],
+    discovered_terms: list[str],
+    mode: str,
+) -> dict[str, Any]:
+    """Minimal-profile reporting metrics (RQ2 reduction / reuse / extension)."""
+    discovered_count = len(set(discovered_terms))
+    selected_count = len(changes)
+    addressed = {
+        requirement_id for change in changes for requirement_id in change.source_requirement_ids
+    }
+    addressed_count = len(addressed)
+    reuse_count = sum(1 for change in changes if change.change_type != 'create_extension_property')
+    extension_count = sum(1 for change in changes if change.change_type == 'create_extension_property')
+    return {
+        'mode': mode,
+        'source_requirement_count': len(requirements),
+        'approved_requirement_count': sum(1 for requirement in requirements if requirement.status == 'approved'),
+        'discovered_candidate_term_count': discovered_count,
+        'selected_profile_change_count': selected_count,
+        'reduction_rate': round(1 - selected_count / discovered_count, 4) if discovered_count else 0.0,
+        'reuse_rate': round(reuse_count / selected_count, 4) if selected_count else 0.0,
+        'extension_rate': round(extension_count / selected_count, 4) if selected_count else 0.0,
+        'requirements_addressed_count': addressed_count,
+        'average_profile_changes_per_requirement': round(selected_count / addressed_count, 4) if addressed_count else 0.0,
+        # retained for backward compatibility with earlier consumers
+        'change_count': selected_count,
+        'needs_review_change_count': sum(1 for change in changes if change.review_status == 'needs_review'),
+        'changes_by_type': count_by(changes, lambda change: change.change_type),
+        'changes_by_target_class': count_by(changes, lambda change: change.target_class),
+    }
 
 
 def select_changes(change_set: ProfileChangeSet, accepted_only: bool) -> tuple[list[ProfileChange], list[str]]:

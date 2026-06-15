@@ -38,11 +38,13 @@ export type ExtractionProvenance = {
 };
 
 export type AnalysisRequest = {
+  source_corpus_id?: string | null;
   text?: string;
   artifacts: ArtifactPayload[];
   user_tasks?: UserTask[];
   strategy?: ExtractionStrategy;
   llm_model?: string | null;
+  cq_guided?: boolean;
 };
 
 export type ArtifactSummary = {
@@ -91,6 +93,13 @@ export type CandidateMetadataAction = {
   target_class?: string | null;
   candidate_terms: string[];
   rationale: string;
+  constraint_hint?: {
+    cardinality?: string | null;
+    value_kind: NormalizedIntent['value_kind'];
+    datatype_or_class?: string | null;
+    obligation: NormalizedIntent['obligation_hint'];
+  } | null;
+  source_requirement_id?: string | null;
 };
 
 export type CandidateRequirement = {
@@ -114,6 +123,7 @@ export type CandidateRequirement = {
   fair_rationale?: string | null;
   candidate_metadata_actions: CandidateMetadataAction[];
   supports_user_tasks: string[];
+  requires_multiple_elements?: boolean;
   validation_evidence: string[];
   validation_status: ValidationStatus;
   requirement_scope: RequirementScope;
@@ -180,6 +190,7 @@ export type CompetencyQuestion = {
 
 export type AnalysisResponse = {
   strategy: ExtractionStrategy;
+  study_setup: Record<string, unknown>;
   user_tasks: UserTask[];
   artifacts: ArtifactSummary[];
   evidence_units: EvidenceUnit[];
@@ -189,6 +200,7 @@ export type AnalysisResponse = {
   semantic_candidates: SemanticCandidate[];
   metadata_candidates: MetadataCandidate[];
   competency_questions: CompetencyQuestion[];
+  funnel_metrics: Record<string, unknown>;
   warnings: string[];
 };
 
@@ -235,6 +247,14 @@ export type Rq1DatasetExport = {
   schema_version: string;
   export_kind?: 'reviewed_frontend_state' | 'service_generated';
   generated_at: string;
+  source_corpus_id?: string | null;
+  reviewer_id?: string;
+  session_id?: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  study_setup?: Record<string, unknown>;
+  rq1_codebook?: Record<string, unknown>;
   strategy_requested: ExtractionStrategy;
   strategy_used: ExtractionStrategy;
   summary_metrics: Record<string, unknown>;
@@ -245,6 +265,7 @@ export type Rq1DatasetExport = {
   local_merge_events?: Rq1LocalMergeEvent[];
   local_split_events?: Rq1LocalSplitEvent[];
   user_tasks: UserTask[];
+  funnel_metrics?: Record<string, unknown>;
   warnings: string[];
   review_editor_history: Array<Record<string, unknown>>;
 };
@@ -307,8 +328,12 @@ export type ProfileChange = {
   evidence_ids: string[];
   source_requirement_ids: string[];
   review_status: 'candidate' | 'accepted' | 'rejected' | 'needs_review';
+  selected?: boolean;
+  alternative_terms?: string[];
   warnings: string[];
 };
+
+export type ProfileGenerationMode = 'minimal' | 'exploratory';
 
 export type ProfileChangeSet = {
   id: string;
@@ -317,7 +342,10 @@ export type ProfileChangeSet = {
   profile_base: string;
   profile_namespace: string;
   profile_prefix: string;
+  mode: ProfileGenerationMode;
   changes: ProfileChange[];
+  discovered_candidate_terms: string[];
+  review_history: Array<Record<string, unknown>>;
   warnings: string[];
   summary_metrics: Record<string, unknown>;
 };
@@ -351,17 +379,19 @@ export type RQ2Package = {
 export function generateProfileChanges(payload: {
   requirements: CandidateRequirement[];
   approved_only?: boolean;
+  mode?: ProfileGenerationMode;
   base_profile?: string;
 }) {
   return postJson<ProfileChangeSet>('generate-profile-changes', payload);
 }
 
-export function generateProfileDraft(payload: { profile_change_set: ProfileChangeSet; accepted_only?: boolean }) {
+export function generateProfileDraft(payload: { profile_change_set: ProfileChangeSet; accepted_only?: boolean; base_schema?: SchemaModel }) {
   return postJson<ProfileGenerationResponse>('generate-profile-draft', payload);
 }
 
 export function exportRq2Package(payload: {
   profile_change_set: ProfileChangeSet;
+  base_schema?: SchemaModel;
   source_requirement_set_id?: string | null;
   approved_requirement_count?: number;
   accepted_only?: boolean;

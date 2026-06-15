@@ -36,13 +36,26 @@ classes:
         description: Base profile being extended (DCAT-AP).
       profile_namespace: {}
       profile_prefix: {}
+      mode:
+        range: ProfileGenerationMode
+        description: minimal (one primary action per requirement) or exploratory (all candidates).
       changes:
         range: ProfileChange
         multivalued: true
+      discovered_candidate_terms:
+        multivalued: true
+        description: All candidate terms discovered across requirements, kept as suggestions.
+      review_history:
+        multivalued: true
+        description: Reviewer/session decision log for profile-change accept/reject/edit actions.
       warnings:
         multivalued: true
       summary_metrics:
-        description: Counts by change type, target class, and review status.
+        description: >-
+          Reduction/reuse reporting: discovered_candidate_term_count,
+          selected_profile_change_count, reduction_rate, reuse_rate,
+          extension_rate, requirements_addressed_count, and
+          average_profile_changes_per_requirement.
 
   ProfileChange:
     description: A single reviewable profile change proposal.
@@ -76,10 +89,18 @@ classes:
         description: All requirements folded into this change (duplicates share one slot).
       review_status:
         range: ProfileChangeReviewStatus
+      selected:
+        range: boolean
+        description: True for the primary action minimal mode would pick (vs exploratory extras).
+      alternative_terms:
+        multivalued: true
+        description: Other candidate terms considered for this slot but not chosen (suggestions).
       warnings:
         multivalued: true
 
 enums:
+  ProfileGenerationMode:
+    permissible_values: {minimal: {}, exploratory: {}}
   ProfileChangeType:
     permissible_values:
       reuse_property: {}

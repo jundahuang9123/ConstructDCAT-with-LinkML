@@ -16,6 +16,7 @@ from ..models import (
     SourceEvidence,
     UserTask,
 )
+from ..rq1_codebook import codebook_prompt_text
 from .client import LLMClient
 
 PROMPT_VERSION = 'rrs-extract-v1'
@@ -80,7 +81,9 @@ genuinely helps answer or accomplish it.
 8. Do not invent requirements that have no support in the sources. Fewer, well-grounded \
 records are better than many speculative ones.
 9. Normalize: if several places express the same need, produce ONE requirement with multiple \
-evidence quotes rather than near-duplicates."""
+evidence quotes rather than near-duplicates.
+10. Extract catalog-level discovery requirements, not every internal term, object, property, \
+geometry detail, calculation, or measurement value from source artifacts."""
 
 
 class LLMEvidence(BaseModel):
@@ -123,10 +126,10 @@ def extract_with_llm(
     if not evidence_units:
         return [], ['No analyzable source content was provided for LLM extraction.']
 
-    user_prompt = build_user_prompt(evidence_units, payload.user_tasks)
+    user_prompt, prompt_warnings = build_user_prompt(evidence_units, payload.user_tasks)
     result = client.generate_structured(system=SYSTEM_PROMPT, user=user_prompt, output_model=LLMExtractionResult)
 
-    warnings: list[str] = []
+    warnings: list[str] = list(prompt_warnings)
     requirements: list[CandidateRequirement] = []
     evidence_by_id = {unit.id: unit for unit in evidence_units}
     known_task_ids = {task.id for task in payload.user_tasks}
@@ -158,8 +161,9 @@ def build_evidence_units(payload: AnalysisRequest) -> list[EvidenceUnit]:
     return extract_evidence_units(payload)
 
 
-def build_user_prompt(evidence_units: list[EvidenceUnit], user_tasks: list[UserTask]) -> str:
-    parts: list[str] = []
+def build_user_prompt(evidence_units: list[EvidenceUnit], user_tasks: list[UserTask]) -> tuple[str, list[str]]:
+    parts: list[str] = [codebook_prompt_text(), '']
+    warnings: list[str] = []
     if user_tasks:
         parts.append('USER TASKS / COMPETENCY QUESTIONS (reference these ids in supports_user_tasks):')
         for task in user_tasks:
@@ -169,16 +173,21 @@ def build_user_prompt(evidence_units: list[EvidenceUnit], user_tasks: list[UserT
 
     parts.append('EVIDENCE UNITS (cite evidence_unit_id plus a verbatim quote from content):')
     total = 0
+    omitted_ids: list[str] = []
+    truncated_ids: list[str] = []
     for unit in evidence_units:
         content = unit.content
         if len(content) > MAX_CHARS_PER_EVIDENCE_UNIT:
             content = content[:MAX_CHARS_PER_EVIDENCE_UNIT]
+            truncated_ids.append(unit.id)
         if total + len(content) > MAX_TOTAL_CHARS:
             remaining = MAX_TOTAL_CHARS - total
             if remaining <= 0:
                 parts.append(f'--- evidence_unit_id: {unit.id} [omitted: input budget exhausted]')
+                omitted_ids.append(unit.id)
                 continue
             content = content[:remaining]
+            truncated_ids.append(unit.id)
         total += len(content)
         parts.append(f'--- evidence_unit_id: {unit.id}')
         parts.append(f'artifact_name: {unit.artifact_name}')
@@ -191,7 +200,20 @@ def build_user_prompt(evidence_units: list[EvidenceUnit], user_tasks: list[UserT
         parts.append('')
 
     parts.append('Extract the candidate profile-design requirements from these evidence units now.')
-    return '\n'.join(parts)
+    if truncated_ids:
+        unique_truncated_ids = list(dict.fromkeys(truncated_ids))
+        warnings.append(
+            'input_budget_truncation: '
+            f'{len(unique_truncated_ids)} evidence unit(s) were truncated in the LLM prompt due to input budget: '
+            f'{", ".join(unique_truncated_ids[:12])}'
+        )
+    if omitted_ids:
+        warnings.append(
+            'input_budget_omission: '
+            f'{len(omitted_ids)} evidence unit(s) were omitted from the LLM prompt due to input budget: '
+            f'{", ".join(omitted_ids[:12])}'
+        )
+    return '\n'.join(parts), warnings
 
 
 def convert_requirement(

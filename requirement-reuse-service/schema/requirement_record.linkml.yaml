@@ -29,6 +29,30 @@ imports:
   - linkml:types
 
 classes:
+  AnalysisResponse:
+    description: RQ1 extraction response with study setup, funnel metrics, and reviewed requirement candidates.
+    attributes:
+      strategy:
+        range: ExtractionStrategy
+      study_setup:
+        description: Source corpus, CQ-guided flag, allowed extraction inputs, and held-out validation inputs.
+      evidence_units:
+        range: EvidenceUnit
+        multivalued: true
+      requirements:
+        range: CandidateRequirement
+        multivalued: true
+      duplicate_groups:
+        range: DuplicateGroup
+        multivalued: true
+      user_tasks:
+        range: UserTask
+        multivalued: true
+      funnel_metrics:
+        description: Evidence units -> source signals -> candidate requirements -> duplicate/discard metrics.
+      warnings:
+        multivalued: true
+
   RequirementSet:
     description: A named, persisted collection of requirement records plus the user tasks they were extracted against.
     slots: [id, name, description, created_at, strategy]
@@ -39,6 +63,31 @@ classes:
       user_tasks:
         range: UserTask
         multivalued: true
+
+  EvidenceUnit:
+    description: Source chunk sent to rules/LLM extraction and cited by candidate requirements.
+    slots: [id]
+    attributes:
+      source_id: {}
+      artifact_name: {}
+      artifact_kind: {}
+      locator: {}
+      content: {}
+      extracted_facts:
+        multivalued: true
+      confidence:
+        range: float
+
+  DuplicateGroup:
+    description: Suggested duplicate/merge group for requirement review.
+    slots: [id]
+    attributes:
+      requirement_ids:
+        multivalued: true
+      suggested_merged_statement: {}
+      reason: {}
+      confidence:
+        range: float
 
   UserTask:
     description: An expert-provided competency question, user task, or stakeholder need that requirements can support.
@@ -81,6 +130,12 @@ classes:
       supports_user_tasks:
         multivalued: true
         description: IDs of user tasks / competency questions this requirement supports (enables CQ-coverage evaluation).
+      requires_multiple_elements:
+        range: boolean
+        description: >-
+          When true, the requirement explicitly mandates several distinct profile
+          elements, so RQ2 minimal mode keeps the best term per slot instead of a
+          single primary action. Defaults to false (candidate terms are alternatives).
       validation_evidence:
         multivalued: true
         description: References to validation artifacts (test cases, SHACL reports) once the requirement is checked. Populated in later workflow stages.

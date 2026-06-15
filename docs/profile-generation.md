@@ -61,6 +61,39 @@ Generation rules:
 - duplicate requirements proposing the same slot on the same class are folded
   into one change (strongest obligation wins, requirement/evidence ids merge).
 
+## Minimal-profile mode (candidate terms are suggestions, not obligations)
+
+Extraction discovers many candidate terms per requirement. To keep the
+generated application profile minimal, RQ2 distinguishes **discovered candidate
+terms** (suggestions/evidence) from **selected profile actions** (the proposals
+a reviewer actually acts on), and supports two modes:
+
+- **`minimal`** (default): each approved requirement contributes **one primary,
+  reuse-first profile action**. Its other candidate terms are preserved on the
+  change as `alternative_terms` (and on the set as `discovered_candidate_terms`)
+  rather than becoming separate review items. A requirement that legitimately
+  needs several distinct elements sets `requires_multiple_elements: true`, and
+  minimal mode then keeps the best term per slot.
+- **`exploratory`**: every candidate term/action becomes a `ProfileChange`
+  (debugging / full recall); the change that minimal mode would have picked is
+  flagged `selected: true`.
+
+Candidate actions are ranked (lower = preferred) by: semantic fit, term
+suitability, reuse priority, verified evidence, competency-question coverage,
+and obligation strength. Reuse is preferred when it adequately satisfies the
+requirement; a generic standard term such as `dcterms:identifier` or
+`dcat:keyword` must not beat a specific term that expresses the requirement
+(for example `cx:hasAASSubmodel` for AAS-submodel discovery). Redundancy is
+explicit: several requirements supporting the same slot merge into one change
+carrying all of their `source_requirement_ids` and `evidence_ids`.
+
+`ProfileChangeSet.summary_metrics` reports the reduction this achieves:
+`discovered_candidate_term_count`, `selected_profile_change_count`,
+`reduction_rate`, `reuse_rate`, `extension_rate`, `requirements_addressed_count`,
+and `average_profile_changes_per_requirement`. The mode is selected with the
+`mode` field on `POST /generate-profile-changes` (the workbench exposes a
+Minimal / Exploratory toggle).
+
 ## Generated artifacts
 
 **LinkML profile draft.** Profile classes are generated only for targeted base
@@ -97,16 +130,22 @@ compatibility but the change-set pipeline above is the primary path.
 
 ## Workbench flow
 
-1. **Requirement Review** — approve/reject/edit/merge/split (all edits logged
+1. **Sources & Questions** — load source documents, competency questions, and
+   user tasks; expert reference requirements and expected answer sets are held
+   out for validation.
+2. **Extract & Abstract** — evidence units become source signals, grouped
+   discovery needs, and catalog-level candidate requirements. The RQ1 codebook
+   lives in `requirement-reuse-service/schema/rq1_codebook.yaml`.
+3. **Requirement Review** — approve/reject/edit/merge/split (all edits logged
    to `provenance.editor_history`).
-2. **Profile changes** button — refuses to run with zero approved
+4. **Profile changes** button — refuses to run with zero approved
    requirements; server warnings (unverified evidence, missing actions) are
    shown, not hidden.
-3. **Profile Changes tab** — accept/reject each proposed change; source
+5. **Profile Changes tab** — accept/reject each proposed change; source
    requirements and evidence counts are visible per change.
-4. **Generated Profile tab** — LinkML + SHACL preview with validation notes;
-   `Merge Draft` is the only action that touches the active editor model.
-5. **Export** — RQ1 dataset, RQ2 package, SHACL, LinkML.
+6. **Generated Profile tab** — LinkML + SHACL preview with validation notes;
+   active base-schema warnings block merge until reviewed.
+7. **Export** — RQ1 reviewed dataset, RQ2 package, SHACL, LinkML, and metrics.
 
 ## Example outputs
 

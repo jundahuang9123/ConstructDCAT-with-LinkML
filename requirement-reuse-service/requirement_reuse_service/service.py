@@ -37,6 +37,13 @@ from .models import (
     SemanticCandidate,
     UserTask,
 )
+from .rq1_codebook import load_rq1_codebook
+from .term_registry import (
+    TERMS as RQ2_TERMS,
+    compact as compact_registry_uri,
+    domain_compatible as rq2_domain_compatible,
+    normalize_resource_type as normalize_registry_resource,
+)
 
 
 TEXT_RULES = [
@@ -216,12 +223,14 @@ def analyze_payload(payload: AnalysisRequest) -> AnalysisResponse:
     else:
         requirements = llm_requirements
     requirements = link_user_tasks(requirements, payload.user_tasks)
+    duplicate_groups = detect_duplicate_requirements(requirements)
 
     return rules_response.model_copy(
         update={
             'strategy': payload.strategy,
             'requirements': requirements,
-            'duplicate_groups': detect_duplicate_requirements(requirements),
+            'duplicate_groups': duplicate_groups,
+            'funnel_metrics': build_funnel_metrics(rules_response.evidence_units, requirements, duplicate_groups),
             'warnings': [*rules_response.warnings, *llm_warnings],
         }
     )
@@ -277,6 +286,7 @@ def analyze_payload_rules(payload: AnalysisRequest) -> AnalysisResponse:
 
     return AnalysisResponse(
         strategy='rules',
+        study_setup=study_setup_from_request(payload),
         artifacts=artifacts,
         evidence_units=dedupe_evidence_units(evidence_units),
         extracted_attributes=dedupe_attributes(extracted_attributes),
@@ -286,6 +296,7 @@ def analyze_payload_rules(payload: AnalysisRequest) -> AnalysisResponse:
         metadata_candidates=dedupe_metadata(metadata_candidates),
         competency_questions=dedupe_questions(competency_questions),
         user_tasks=list(payload.user_tasks),
+        funnel_metrics=build_funnel_metrics(evidence_units, requirements, duplicate_groups),
         warnings=warnings,
     )
 
@@ -353,10 +364,14 @@ def export_rq1_dataset(payload: AnalysisRequest) -> dict[str, Any]:
         'schema_version': 'rq1-requirement-dataset-v1',
         'export_kind': 'reproducible_run',
         'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        'source_corpus_id': payload.source_corpus_id,
+        'study_setup': analysis.study_setup,
+        'rq1_codebook': load_rq1_codebook(),
         'strategy_requested': payload.strategy,
         'strategy_used': analysis.strategy,
         'summary_metrics': {
             'competency_question_coverage': competency_question_coverage(requirements, analysis.user_tasks),
+            'funnel_metrics': analysis.funnel_metrics,
             'requirement_count': len(requirements),
             'evidence_unit_count': len(analysis.evidence_units),
             'duplicate_group_count': len(analysis.duplicate_groups),
@@ -373,6 +388,7 @@ def export_rq1_dataset(payload: AnalysisRequest) -> dict[str, Any]:
         'evidence_units': [unit.model_dump(mode='json', exclude_none=True) for unit in analysis.evidence_units],
         'duplicate_groups': [group.model_dump(mode='json', exclude_none=True) for group in analysis.duplicate_groups],
         'user_tasks': [task.model_dump(mode='json', exclude_none=True) for task in analysis.user_tasks],
+        'funnel_metrics': analysis.funnel_metrics,
         'warnings': analysis.warnings,
         'review_editor_history': [
             {
@@ -386,6 +402,58 @@ def export_rq1_dataset(payload: AnalysisRequest) -> dict[str, Any]:
         ],
     }
 
+
+def study_setup_from_request(payload: AnalysisRequest) -> dict[str, Any]:
+    codebook = load_rq1_codebook()
+    return {
+        'source_corpus_id': payload.source_corpus_id,
+        'user_tasks': [task.model_dump(mode='json', exclude_none=True) for task in payload.user_tasks],
+        'competency_questions': [
+            task.model_dump(mode='json', exclude_none=True)
+            for task in payload.user_tasks
+            if task.kind == 'competency_question'
+        ],
+        'strategy': payload.strategy,
+        'cq_guided': payload.cq_guided,
+        'allowed_extraction_input': codebook.get('allowed_extraction_input', []),
+        'held_out_validation_input': codebook.get('held_out_validation_input', []),
+    }
+
+
+def build_funnel_metrics(
+    evidence_units: list[EvidenceUnit],
+    requirements: list[CandidateRequirement],
+    duplicate_groups: list[DuplicateGroup],
+) -> dict[str, Any]:
+    source_signal_count = sum(len(unit.extracted_facts) for unit in evidence_units)
+    supported_ids = {evidence.evidence_unit_id for requirement in requirements for evidence in requirement.source_evidence}
+    discarded_domain_content_count = sum(
+        1
+        for unit in evidence_units
+        if unit.id not in supported_ids and exclusion_category_for_evidence(unit) is not None
+    )
+    return {
+        'evidence_unit_count': len(evidence_units),
+        'source_signal_count': source_signal_count,
+        'candidate_requirement_count': len(requirements),
+        'discarded_domain_content_count': discarded_domain_content_count,
+        'merged_duplicate_count': sum(max(0, len(group.requirement_ids) - 1) for group in duplicate_groups),
+    }
+
+
+def exclusion_category_for_evidence(unit: EvidenceUnit) -> str | None:
+    text = f"{unit.locator or ''} {unit.content} {' '.join(unit.extracted_facts)}".lower()
+    if any(token in text for token in ['ifc_class:', 'ifcwall', 'ifcdoor', 'ifcslab', 'pset_']):
+        return 'ontology_class_mirroring'
+    if any(token in text for token in ['coordinate', 'geometry', 'mesh', 'shape representation']):
+        return 'geometry_detail'
+    if any(token in text for token in ['sensor value', 'measurement value', 'timeseries value']):
+        return 'sensor_measurement_value'
+    if any(token in text for token in ['calculation', 'computed load', 'u-value']):
+        return 'engineering_calculation'
+    if any(token in text for token in ['idshort =', 'modeltype =', 'valuetype =']):
+        return 'internal_instance_data'
+    return None
 
 
 def competency_question_coverage(requirements: list[CandidateRequirement], user_tasks: list[UserTask]) -> dict[str, Any]:
@@ -951,27 +1019,33 @@ def infer_requirement_scope(requirement: CandidateRequirement) -> str:
 
 
 def term_catalog() -> dict[str, dict[str, Any]]:
-    catalog = dict(COMMON_TERM_CATALOG)
+    catalog: dict[str, dict[str, Any]] = {}
+    for term, info in RQ2_TERMS.items():
+        if info.get('type') == 'property':
+            catalog[term] = {
+                'resource_types': info.get('domain'),
+                'range': info.get('range'),
+                'source': 'rq2_term_registry',
+            }
+        elif info.get('type') == 'class':
+            resource_type = normalize_registry_resource(term) or term.rsplit(':', 1)[-1]
+            catalog[term] = {
+                'resource_types': [resource_type],
+                'source': 'rq2_term_registry',
+            }
     for term in PROPERTY_CATALOG.values():
-        compact = compact_uri(term['uri'])
-        resource_types = ['Dataset']
-        if compact in {'dcat:accessURL', 'dcat:downloadURL', 'dcat:mediaType', 'dcterms:format'}:
-            resource_types = ['Distribution']
-        elif compact == 'dcat:distribution':
-            resource_types = ['Dataset']
-        elif compact in {'dcterms:license', 'dcterms:accessRights', 'dcterms:conformsTo', 'dcterms:provenance'}:
-            resource_types = ['Dataset', 'Distribution']
-        elif compact.startswith('cx:'):
-            resource_types = ['Dataset']
-        catalog[compact] = {'resource_types': resource_types, **term}
+        compact = compact_registry_uri(term['uri'])
+        existing = catalog.get(compact, {})
+        catalog[compact] = {**existing, **term, 'resource_types': existing.get('resource_types')}
     return catalog
 
 
 def term_matches_resource(term: str, resource_type: str | None) -> bool:
     if not resource_type or resource_type == 'Unknown':
         return True
-    allowed = term_catalog().get(term, {}).get('resource_types')
-    return not allowed or resource_type in allowed
+    if term not in term_catalog():
+        return True
+    return rq2_domain_compatible(term, resource_type)
 
 
 def detect_duplicate_requirements(requirements: list[CandidateRequirement]) -> list[DuplicateGroup]:

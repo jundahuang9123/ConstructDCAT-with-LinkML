@@ -11,13 +11,14 @@ from requirement_reuse_service.llm.client import LLMError, MockLLMClient, extrac
 from requirement_reuse_service.llm.extractor import (  # noqa: E402
     LLMExtractionResult,
     PROMPT_VERSION,
+    build_user_prompt,
     extract_with_llm,
     merge_hybrid,
 )
 from requirement_reuse_service.llm import LLMConfig, create_client  # noqa: E402
-from requirement_reuse_service.models import AnalysisRequest, RequirementSetSaveRequest, UserTask  # noqa: E402
+from requirement_reuse_service.models import AnalysisRequest, EvidenceUnit, RequirementSetSaveRequest, UserTask  # noqa: E402
 from requirement_reuse_service.registry import load_requirement_set, save_requirement_set  # noqa: E402
-from requirement_reuse_service.service import analyze_payload, export_rq1_dataset, extract_evidence_units  # noqa: E402
+from requirement_reuse_service.service import analyze_payload, export_rq1_dataset, extract_evidence_units, term_catalog  # noqa: E402
 
 
 SOURCE_TEXT = (
@@ -224,6 +225,35 @@ def test_rq1_export_includes_evidence_units_and_duplicate_groups():
     assert 'duplicate_groups' in export
     assert 'review_editor_history' in export
     assert export['summary_metrics']['evidence_unit_count'] == len(export['evidence_units'])
+    assert 'rq1_codebook' in export
+    assert 'funnel_metrics' in export
+
+
+def test_rq1_validation_uses_shared_rq2_term_registry():
+    catalog = term_catalog()
+    for term in ['dcat:landingPage', 'dcterms:language', 'dcterms:spatial', 'foaf:name', 'prov:wasAttributedTo']:
+        assert term in catalog
+
+
+def test_llm_prompt_reports_truncated_and_omitted_evidence_units():
+    units = [
+        EvidenceUnit(
+            id=f'ev-{index}',
+            source_id='src',
+            artifact_name='large.txt',
+            artifact_kind='text',
+            content='license ' + ('x' * 5000),
+            extracted_facts=['Large source chunk'],
+        )
+        for index in range(70)
+    ]
+
+    prompt, warnings = build_user_prompt(units, [])
+
+    assert 'RQ1 CODEBOOK' in prompt
+    assert 'Held-out validation input' in prompt
+    assert any('input_budget_truncation' in warning for warning in warnings)
+    assert any('input_budget_omission' in warning for warning in warnings)
 
 
 def test_mock_client_rejects_payload_that_violates_schema():

@@ -1,0 +1,51 @@
+schema_version: rq1-codebook-v1
+title: RQ1 Catalog-Level Discovery Requirement Codebook
+purpose: >-
+  Defines what counts as an RQ1 requirement for the PhD profile workbench.
+  RQ1 extracts catalog-level discovery, assessment, comparison, and selection
+  requirements. It does not mirror every internal source term or object.
+
+valid_requirement_conditions:
+  - Describes catalog, dataset, distribution, data service, or profile metadata rather than internal source content.
+  - Supports a discovery, assessment, comparison, access, reuse, or selection task.
+  - Can be represented by DCAT/DCAT-AP reuse or a justified profile extension.
+
+allowed_extraction_input:
+  - source_documents
+  - competency_questions
+  - user_tasks
+
+held_out_validation_input:
+  - expert_reference_requirements
+  - expected_answer_set
+  - manually_curated_gold_requirements
+
+discovery_need_types:
+  - descriptive_metadata
+  - access_and_license
+  - representation_format
+  - schema_or_standard
+  - asset_or_entity_scope
+  - lifecycle_phase
+  - semantic_anchor
+  - quality_or_provenance
+  - spatial_or_project_context
+
+exclude_as_not_rq1:
+  - internal_instance_data
+  - per_object_attribute
+  - engineering_calculation
+  - geometry_detail
+  - sensor_measurement_value
+  - ontology_class_mirroring
+  - implementation_detail
+
+positive_examples:
+  - Dataset should expose represented construction asset/entity types for discovery.
+  - Distribution should expose format, media type, download URL, and schema/conformance metadata.
+  - Dataset should expose license and access-rights conditions for reuse assessment.
+
+negative_examples:
+  - Extract IfcWall as a profile requirement.
+  - Extract every IFC property set attribute as a profile requirement.
+  - Extract a sensor measurement value as a profile requirement.
