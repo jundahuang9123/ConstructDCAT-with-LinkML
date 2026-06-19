@@ -35,9 +35,9 @@ docker compose up --build
 
 Then open:
 
-- Profile editor: `http://localhost:8000/`
-- API docs: `http://localhost:8000/docs`
-- Health: `http://localhost:8000/health`
+- Profile editor: `http://localhost:8080/`
+- API docs: `http://localhost:8080/docs`
+- Health: `http://localhost:8080/health`
 
 ## Profile Workflow
 
